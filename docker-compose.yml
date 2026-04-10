@@ -1,0 +1,18 @@
+version: "3.9"
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    container_name: saras-tutor-db
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: saras
+      POSTGRES_PASSWORD: saras
+      POSTGRES_DB: saras_tutor
+    ports:
+      - "5432:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+
+volumes:
+  pgdata:

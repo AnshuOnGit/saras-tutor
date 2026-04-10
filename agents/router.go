@@ -1,0 +1,936 @@
+package agents
+
+import (
+	"context"
+	"encoding/base64"
+	"fmt"
+	"log"
+	"strings"
+	"time"
+
+	"saras-tutor/a2a"
+	"saras-tutor/config"
+	"saras-tutor/db"
+	"saras-tutor/llm"
+	"saras-tutor/models"
+
+	"github.com/google/uuid"
+)
+
+// ── Router ─────────────────────────────────────────────────────────────
+// Deterministic dispatcher — no LLM call for routing.
+//
+// The frontend sends an explicit "action" in task.Metadata["action"]:
+//
+//   new_question   — student types a question or uploads an image
+//   more_help      — student wants the next hint
+//   show_solution  — student wants the full solution now
+//   close          — student is satisfied, dismiss the interaction
+//   retry_model    — student picked an alternative model after verifier failure
+//
+// The router reads the current interaction state from the DB and
+// dispatches to the appropriate agent.
+
+// Router replaces the old LLM-based supervisor. It implements a2a.Agent.
+type Router struct {
+	store       *db.Store
+	cfg         *config.Config
+	llmClient   *llm.Client // lightweight client for utility calls (validation, etc.)
+	subAgents   map[string]a2a.Agent
+	retryModels []string // alternative models for user to pick
+}
+
+// NewRouter creates the deterministic router.
+func NewRouter(store *db.Store, cfg *config.Config, llmClient *llm.Client, subAgents map[string]a2a.Agent) *Router {
+	return &Router{
+		store:       store,
+		cfg:         cfg,
+		llmClient:   llmClient,
+		subAgents:   subAgents,
+		retryModels: cfg.RetryModels,
+	}
+}
+
+// Card satisfies a2a.Agent.
+func (r *Router) Card() a2a.AgentCard {
+	return a2a.AgentCard{
+		ID:          "router",
+		Name:        "Router",
+		Description: "Deterministic dispatcher based on action + interaction state.",
+		Skills:      []string{"routing"},
+	}
+}
+
+// Handle satisfies a2a.Agent (sync wrapper).
+func (r *Router) Handle(ctx context.Context, task *a2a.Task) (*a2a.Task, error) {
+	ch := make(chan a2a.StreamEvent, 128)
+	go func() {
+		r.HandleStream(ctx, task, ch)
+		close(ch)
+	}()
+	var lastMsg *a2a.Message
+	for ev := range ch {
+		if ev.Message != nil {
+			lastMsg = ev.Message
+		}
+		if ev.Type == "error" {
+			task.State = a2a.TaskStateFailed
+			task.Output = &a2a.Message{Role: "agent", Parts: []a2a.Part{a2a.TextPart(ev.Error)}}
+			return task, fmt.Errorf("%s", ev.Error)
+		}
+	}
+	task.State = a2a.TaskStateCompleted
+	task.Output = lastMsg
+	return task, nil
+}
+
+// HandleStream is the primary entry point.
+func (r *Router) HandleStream(ctx context.Context, task *a2a.Task, out chan<- a2a.StreamEvent) {
+	out <- a2a.StreamEvent{Type: "status", State: a2a.TaskStateWorking}
+
+	action := "new_question" // default
+	if task.Metadata != nil && task.Metadata["action"] != "" {
+		action = task.Metadata["action"]
+	}
+
+	convID := ""
+	userID := ""
+	if task.Metadata != nil {
+		convID = task.Metadata["conversation_id"]
+		userID = task.Metadata["user_id"]
+	}
+
+	log.Printf("[router] action=%s conv=%s user=%s task=%s", action, convID, userID, task.ID)
+
+	switch action {
+	case "new_question":
+		r.handleNewQuestion(ctx, task, convID, userID, out)
+	case "more_help":
+		r.handleMoreHelp(ctx, task, convID, userID, out)
+	case "show_solution":
+		r.handleShowSolution(ctx, task, convID, userID, out)
+	case "retry_model":
+		r.handleRetryModel(ctx, task, convID, userID, out)
+	case "submit_attempt":
+		r.handleSubmitAttempt(ctx, task, convID, userID, out)
+	case "close":
+		r.handleClose(ctx, task, convID, userID, out)
+	default:
+		r.handleNewQuestion(ctx, task, convID, userID, out)
+	}
+}
+
+// ── Action handlers ──────────────────────────────────────────────────
+
+func (r *Router) handleNewQuestion(ctx context.Context, task *a2a.Task, convID, userID string, out chan<- a2a.StreamEvent) {
+	// 1. Close any active interaction (student moved on)
+	if convID != "" {
+		if err := r.store.CloseAllActive(ctx, convID, models.ExitNewQuestion); err != nil {
+			log.Printf("[router] warn: close active interactions: %v", err)
+		}
+	}
+
+	// Gather text from input
+	questionText := extractText(task.Input)
+
+	// 2. Image extraction if needed
+	if hasImageInput(task.Input) {
+		extracted, err := r.extractImage(ctx, task, out)
+		if err != nil {
+			out <- a2a.StreamEvent{Type: "error", Error: err.Error()}
+			return
+		}
+		questionText = extracted
+
+		// Show extracted content as artifact
+		out <- a2a.StreamEvent{
+			Type: "artifact",
+			Message: &a2a.Message{
+				Role:  "agent",
+				Parts: []a2a.Part{a2a.TextPart("**Extracted from image:**\n\n" + questionText)},
+			},
+		}
+	}
+
+	if questionText == "" {
+		out <- a2a.StreamEvent{Type: "error", Error: "no question text provided"}
+		return
+	}
+
+	// 3. Validate the question is about an allowed subject (math/physics/chemistry/biology)
+	vr, _ := ValidateQuestion(ctx, r.llmClient, questionText)
+	if vr != nil && !vr.Valid {
+		log.Printf("[router] question rejected: %s", vr.Reason)
+		out <- a2a.StreamEvent{
+			Type: "artifact",
+			Message: &a2a.Message{
+				Role:  "agent",
+				Parts: []a2a.Part{a2a.TextPart(InvalidQuestionMessage(vr))},
+			},
+		}
+		out <- a2a.StreamEvent{Type: "status", State: a2a.TaskStateCompleted}
+		return
+	}
+
+	// 4. Parse the question into structured format (topics, difficulty, variables)
+	parsedQ, _ := ParseQuestion(ctx, r.llmClient, questionText)
+	var subjectName, chapterName string
+	var topicNames []string
+	difficulty := 0
+	problemText := questionText
+
+	if parsedQ != nil {
+		subjectName = parsedQ.Subject
+		chapterName = parsedQ.Chapter
+		topicNames = parsedQ.Topics
+		difficulty = parsedQ.Difficulty
+		if parsedQ.Question != "" {
+			problemText = parsedQ.Question
+		}
+	}
+	log.Printf("[router] parsed metadata subject=%q chapter=%q topics=%v difficulty=%d", subjectName, chapterName, topicNames, difficulty)
+
+	// 5. Resolve taxonomy IDs
+	subjectID := r.store.LookupSubjectID(ctx, subjectName)
+	topicIDs := r.store.LookupTopicIDs(ctx, topicNames)
+
+	// 6. Create new interaction (store image_id if image was uploaded)
+	imageID := ""
+	if task.Metadata != nil {
+		imageID = task.Metadata["image_id"]
+	}
+	interaction := &models.Interaction{
+		ID:             uuid.New().String(),
+		ConversationID: convID,
+		QuestionText:   questionText,
+		ImageID:        imageID,
+		SubjectID:      subjectID,
+		TopicIDs:       topicIDs,
+		Difficulty:     difficulty,
+		ProblemText:    problemText,
+		State:          models.InteractionNew,
+		HintLevel:      0,
+		CreatedAt:      time.Now().UTC(),
+	}
+	if err := r.store.CreateInteraction(ctx, interaction); err != nil {
+		log.Printf("[router] warn: create interaction: %v", err)
+		// Continue anyway — hints still work without DB tracking
+	}
+
+	// 7. Update student profile
+	if userID != "" {
+		if _, err := r.store.GetOrCreateProfile(ctx, userID); err != nil {
+			log.Printf("[router] warn: get/create profile: %v", err)
+		}
+		if err := r.store.AppendProfileQuestionStat(ctx, userID, convID, chapterName, topicNames, difficulty); err != nil {
+			log.Printf("[router] warn: append aggr_stats: %v", err)
+		}
+	}
+
+	// 8. Dispatch Hint Level 1
+	r.dispatchHint(ctx, task, interaction, 1, out)
+}
+
+func (r *Router) handleMoreHelp(ctx context.Context, task *a2a.Task, convID, userID string, out chan<- a2a.StreamEvent) {
+	interaction, err := r.store.GetActiveInteraction(ctx, convID)
+	if err != nil || interaction == nil {
+		// No active interaction — treat typed text as new question
+		log.Printf("[router] no active interaction for more_help, treating as new question")
+		r.handleNewQuestion(ctx, task, convID, userID, out)
+		return
+	}
+
+	nextLevel := interaction.HintLevel + 1
+	if nextLevel > 3 {
+		// Already at hint_3 — give full solution
+		log.Printf("[router] already at hint %d, escalating to full solution", interaction.HintLevel)
+		r.handleShowSolution(ctx, task, convID, userID, out)
+		return
+	}
+
+	r.dispatchHint(ctx, task, interaction, nextLevel, out)
+}
+
+func (r *Router) handleShowSolution(ctx context.Context, task *a2a.Task, convID, userID string, out chan<- a2a.StreamEvent) {
+	interaction, err := r.store.GetActiveInteraction(ctx, convID)
+	if err != nil || interaction == nil {
+		log.Printf("[router] no active interaction for show_solution, treating as new question")
+		r.handleNewQuestion(ctx, task, convID, userID, out)
+		return
+	}
+
+	log.Printf("[router] dispatching solver for interaction=%s", interaction.ID)
+	emitTransition(out, "router", "solver", task.ID, "student requested full solution")
+
+	// Dispatch solver with the original question (+ image if verifier low)
+	completed := r.dispatchSolver(ctx, task, interaction, out)
+
+	if completed {
+		// Mark interaction as solved only if fully completed (not awaiting model picker)
+		if err := r.store.CloseInteraction(ctx, interaction.ID, models.InteractionSolved, models.ExitNeededSolution); err != nil {
+			log.Printf("[router] warn: close interaction: %v", err)
+		}
+
+		// Update long-term memory
+		if userID != "" {
+			if err := r.store.UpdateProfileQuestionOutcome(ctx, userID, convID, interaction.HintLevel, false); err != nil {
+				log.Printf("[router] warn: record outcome: %v", err)
+			}
+		}
+	} else {
+		log.Printf("[router] solver awaiting model picker — interaction stays open id=%s", interaction.ID)
+	}
+}
+
+func (r *Router) handleClose(ctx context.Context, task *a2a.Task, convID, userID string, out chan<- a2a.StreamEvent) {
+	interaction, err := r.store.GetActiveInteraction(ctx, convID)
+	if err != nil || interaction == nil {
+		out <- a2a.StreamEvent{
+			Type: "artifact",
+			Message: &a2a.Message{
+				Role:  "agent",
+				Parts: []a2a.Part{a2a.TextPart("No active question to close. Feel free to ask a new one!")},
+			},
+		}
+		out <- a2a.StreamEvent{Type: "status", State: a2a.TaskStateCompleted}
+		return
+	}
+
+	// Determine exit reason
+	exitReason := models.ExitReasonForState(interaction.State)
+
+	if err := r.store.CloseInteraction(ctx, interaction.ID, models.InteractionClosed, exitReason); err != nil {
+		log.Printf("[router] warn: close interaction: %v", err)
+	}
+
+	// Update long-term memory
+	if userID != "" {
+		if err := r.store.UpdateProfileQuestionOutcome(ctx, userID, convID, interaction.HintLevel, true); err != nil {
+			log.Printf("[router] warn: record outcome: %v", err)
+		}
+	}
+
+	log.Printf("[router] interaction closed id=%s exit=%s hints=%d", interaction.ID, exitReason, interaction.HintLevel)
+
+	out <- a2a.StreamEvent{
+		Type: "artifact",
+		Message: &a2a.Message{
+			Role:  "agent",
+			Parts: []a2a.Part{a2a.TextPart("Great job working through it! 🎯 Feel free to ask another question whenever you're ready.")},
+		},
+	}
+	out <- a2a.StreamEvent{Type: "status", State: a2a.TaskStateCompleted}
+}
+
+func (r *Router) handleSubmitAttempt(ctx context.Context, task *a2a.Task, convID, userID string, out chan<- a2a.StreamEvent) {
+	interaction, err := r.store.GetActiveInteraction(ctx, convID)
+	if err != nil || interaction == nil {
+		log.Printf("[router] no active interaction for submit_attempt, treating as new question")
+		r.handleNewQuestion(ctx, task, convID, userID, out)
+		return
+	}
+
+	studentText := extractText(task.Input)
+	hasImage := hasImageInput(task.Input)
+
+	if studentText == "" && !hasImage {
+		out <- a2a.StreamEvent{Type: "error", Error: "submit_attempt requires your work as text or a photo"}
+		return
+	}
+
+	// Extract text from image via OCR (same pipeline as new_question)
+	if hasImage {
+		extracted, err := r.extractImage(ctx, task, out)
+		if err != nil {
+			out <- a2a.StreamEvent{Type: "error", Error: "could not read your image: " + err.Error()}
+			return
+		}
+		if studentText != "" {
+			studentText = studentText + "\n\n[Extracted from image]\n" + extracted
+		} else {
+			studentText = extracted
+		}
+	}
+
+	hintLevel := interaction.HintLevel
+	if hintLevel < 1 {
+		hintLevel = 1
+	}
+
+	// Dispatch evaluator
+	evaluator, ok := r.subAgents["attempt_evaluator"]
+	if !ok {
+		out <- a2a.StreamEvent{Type: "error", Error: "attempt_evaluator agent not registered"}
+		return
+	}
+
+	evalAgent, isEvalAgent := evaluator.(*AttemptEvaluatorAgent)
+	if !isEvalAgent {
+		out <- a2a.StreamEvent{Type: "error", Error: "attempt_evaluator has wrong type"}
+		return
+	}
+
+	emitTransition(out, "router", "attempt_evaluator", task.ID,
+		fmt.Sprintf("evaluating student attempt at hint level %d", hintLevel))
+
+	result, evalErr := evalAgent.Evaluate(ctx, interaction.QuestionText, studentText, hintLevel)
+	if evalErr != nil {
+		log.Printf("[router] evaluator error: %v", evalErr)
+		out <- a2a.StreamEvent{Type: "error", Error: "failed to evaluate attempt"}
+		return
+	}
+
+	emitTransition(out, "attempt_evaluator", "router", task.ID, fmt.Sprintf("evaluation complete — score %.0f%%", result.Score*100))
+
+	// Persist the attempt — for image-only, record a placeholder in student_message
+	attemptMessage := studentText
+	if attemptMessage == "" {
+		attemptMessage = "[image submission]"
+	}
+	attempt := &models.StudentAttempt{
+		InteractionID:  interaction.ID,
+		UserID:         userID,
+		HintIndex:      hintLevel,
+		StudentMessage: attemptMessage,
+		EvaluatorJSON:  *result,
+	}
+	if err := r.store.SaveStudentAttempt(ctx, attempt); err != nil {
+		log.Printf("[router] warn: save student attempt: %v", err)
+	}
+
+	// Emit evaluator metadata
+	out <- a2a.StreamEvent{
+		Type: "metadata",
+		Meta: map[string]interface{}{
+			"agent":         "attempt_evaluator",
+			"score":         result.Score,
+			"correct":       result.Correct,
+			"hint_consumed": result.HintConsumed,
+		},
+	}
+
+	// Build student-facing feedback
+	var fb strings.Builder
+	if result.Correct {
+		fb.WriteString("✅ **Great work!** Your attempt is correct.\n\n")
+	} else {
+		fb.WriteString(fmt.Sprintf("📝 **Score: %.0f%%**\n\n", result.Score*100))
+	}
+	if len(result.Strengths) > 0 {
+		fb.WriteString("**Strengths:**\n")
+		for _, s := range result.Strengths {
+			fb.WriteString(fmt.Sprintf("- %s\n", s))
+		}
+		fb.WriteString("\n")
+	}
+	if len(result.Errors) > 0 {
+		fb.WriteString("**Issues found:**\n")
+		for _, e := range result.Errors {
+			fb.WriteString(fmt.Sprintf("- %s\n", e))
+		}
+		fb.WriteString("\n")
+	}
+	if len(result.MissingSteps) > 0 {
+		fb.WriteString("**Missing steps:**\n")
+		for _, m := range result.MissingSteps {
+			fb.WriteString(fmt.Sprintf("- %s\n", m))
+		}
+		fb.WriteString("\n")
+	}
+	if result.NextGuidance != "" {
+		fb.WriteString(fmt.Sprintf("💡 %s\n", result.NextGuidance))
+	}
+
+	out <- a2a.StreamEvent{
+		Type: "artifact",
+		Message: &a2a.Message{
+			Role:  "agent",
+			Parts: []a2a.Part{a2a.TextPart(fb.String())},
+		},
+	}
+
+	// Decide next state based on result
+	if result.Correct && result.Score >= 0.8 {
+		// Student nailed it — close the interaction
+		exitReason := models.ExitReasonForState(interaction.State)
+		if err := r.store.CloseInteraction(ctx, interaction.ID, models.InteractionClosed, exitReason); err != nil {
+			log.Printf("[router] warn: close interaction after correct attempt: %v", err)
+		}
+		if userID != "" {
+			if err := r.store.UpdateProfileQuestionOutcome(ctx, userID, convID, interaction.HintLevel, true); err != nil {
+				log.Printf("[router] warn: record outcome: %v", err)
+			}
+		}
+		out <- a2a.StreamEvent{
+			Type: "artifact",
+			Message: &a2a.Message{
+				Role:  "agent",
+				Parts: []a2a.Part{a2a.TextPart("\n---\n🎯 **Well done!** You solved it. Ask another question whenever you're ready.")},
+			},
+		}
+		out <- a2a.StreamEvent{Type: "status", State: a2a.TaskStateCompleted}
+		log.Printf("[router] student attempt correct — interaction closed id=%s", interaction.ID)
+	} else {
+		// Not fully correct — stay in waiting_for_attempt, offer options
+		if err := r.store.UpdateInteraction(ctx, interaction.ID, models.InteractionWaitingForAttempt, hintLevel); err != nil {
+			log.Printf("[router] warn: update interaction to waiting_for_attempt: %v", err)
+		}
+		out <- a2a.StreamEvent{
+			Type:  "status",
+			State: a2a.TaskStateInputNeeded,
+			Message: &a2a.Message{
+				Role:  "agent",
+				Parts: []a2a.Part{a2a.TextPart(fmt.Sprintf(`{"hint_level":%d,"attempt_evaluated":true,"score":%.2f}`, hintLevel, result.Score))},
+			},
+		}
+		log.Printf("[router] attempt scored %.2f — waiting for retry/more_help/close interaction=%s", result.Score, interaction.ID)
+	}
+}
+
+// ── Dispatchers ──────────────────────────────────────────────────────
+
+func (r *Router) dispatchHint(ctx context.Context, task *a2a.Task, interaction *models.Interaction, level int, out chan<- a2a.StreamEvent) {
+	hintAgent, ok := r.subAgents["hint"]
+	if !ok {
+		out <- a2a.StreamEvent{Type: "error", Error: "hint agent not registered"}
+		return
+	}
+
+	hintTaskID := uuid.New().String()
+	emitTransition(out, "router", "hint", hintTaskID, fmt.Sprintf("giving hint level %d", level))
+
+	// For hint level 3+, attach the original image if available so the LLM
+	// can reference it directly (no confidence pre-check needed).
+	var imageDataURI string
+	if level >= 3 && interaction.ImageID != "" {
+		imageDataURI = r.loadImageDataURI(ctx, interaction.ImageID)
+	}
+
+	// Build input parts
+	inputParts := []a2a.Part{a2a.TextPart(interaction.QuestionText)}
+	if imageDataURI != "" {
+		inputParts = append(inputParts, a2a.Part{
+			Type:     "image",
+			ImageURL: imageDataURI,
+		})
+		log.Printf("[router] hint %d — attached original image", level)
+	} else {
+		log.Printf("[router] hint %d — text-only", level)
+	}
+
+	hintTask := &a2a.Task{
+		ID:      hintTaskID,
+		AgentID: "hint",
+		State:   a2a.TaskStateSubmitted,
+		Input: a2a.Message{
+			Role:  "user",
+			Parts: inputParts,
+		},
+		Metadata: map[string]string{
+			"hint_level": fmt.Sprintf("%d", level),
+		},
+		CreatedAt: time.Now().UTC(),
+	}
+
+	// Stream hint to client
+	hintAgent.HandleStream(ctx, hintTask, out)
+	emitTransition(out, "hint", "router", hintTaskID, fmt.Sprintf("hint level %d delivered", level))
+
+	// First set the hint state, then move to waiting_for_attempt
+	var hintState models.InteractionState
+	switch level {
+	case 1:
+		hintState = models.InteractionHint1
+	case 2:
+		hintState = models.InteractionHint2
+	case 3:
+		hintState = models.InteractionHint3
+	default:
+		hintState = models.InteractionHint1
+	}
+	if err := r.store.UpdateInteraction(ctx, interaction.ID, hintState, level); err != nil {
+		log.Printf("[router] warn: update interaction state: %v", err)
+	}
+	// Transition to waiting_for_attempt so we know the student has been invited to try
+	if err := r.store.UpdateInteraction(ctx, interaction.ID, models.InteractionWaitingForAttempt, level); err != nil {
+		log.Printf("[router] warn: set waiting_for_attempt: %v", err)
+	}
+
+	// Append encouragement
+	var prompt string
+	switch level {
+	case 1:
+		prompt = "\n\n---\n💡 **Try solving it!** Submit your attempt, or ask for more help."
+	case 2:
+		prompt = "\n\n---\n💡 **Give it a try!** Submit your work, ask for another hint, or ask for the full solution."
+	case 3:
+		prompt = "\n\n---\n💡 **You're almost there!** Submit your final step, or ask for the solution."
+	}
+	out <- a2a.StreamEvent{
+		Type: "artifact",
+		Message: &a2a.Message{
+			Role:  "agent",
+			Parts: []a2a.Part{a2a.TextPart(prompt)},
+		},
+	}
+
+	// Emit input-needed with hint_level so frontend shows action buttons (including submit_attempt)
+	out <- a2a.StreamEvent{
+		Type:  "status",
+		State: a2a.TaskStateInputNeeded,
+		Message: &a2a.Message{
+			Role:  "agent",
+			Parts: []a2a.Part{a2a.TextPart(fmt.Sprintf(`{"hint_level":%d,"awaiting_attempt":true}`, level))},
+		},
+	}
+	log.Printf("[router] hint %d delivered, waiting for student attempt interaction=%s", level, interaction.ID)
+}
+
+// dispatchSolver returns true if the solution was accepted/completed,
+// false if the model picker was shown (interaction should stay open).
+func (r *Router) dispatchSolver(ctx context.Context, task *a2a.Task, interaction *models.Interaction, out chan<- a2a.StreamEvent) bool {
+	return r.dispatchSolverWithModel(ctx, task, interaction, "", out)
+}
+
+// dispatchSolverWithModel streams a solution and then verifies it.
+// If modelOverride is non-empty, a temporary SolverAgent is created with that model.
+//
+// Flow:
+//  1. Stream solution (text-only first) — capture full text
+//  2. Verify via VerifierAgent
+//  3. If score < threshold AND image available → re-stream with image
+//  4. Verify again
+//  5. If still low → emit input-needed with model options for user to pick
+func (r *Router) dispatchSolverWithModel(ctx context.Context, task *a2a.Task, interaction *models.Interaction, modelOverride string, out chan<- a2a.StreamEvent) bool {
+	solver, ok := r.subAgents["solver"]
+	if !ok {
+		out <- a2a.StreamEvent{Type: "error", Error: "solver agent not registered"}
+		return true
+	}
+
+	// If modelOverride is set, create a temporary solver with that model
+	if modelOverride != "" {
+		altClient := llm.NewClient(r.cfg.LLMAPIKey, modelOverride, r.cfg.LLMBaseURL, r.cfg.LLMUserID)
+		solver = NewSolverAgent(altClient, r.store)
+		log.Printf("[router] using override model %q for solver", modelOverride)
+	}
+
+	verifier, hasVerifier := r.subAgents["verifier"]
+
+	solveTaskID := uuid.New().String()
+	modelLabel := r.cfg.OpenAIModelDefault
+	if modelOverride != "" {
+		modelLabel = modelOverride
+	}
+	emitTransition(out, "router", "solver", solveTaskID,
+		fmt.Sprintf("sending question to solver (model: %s)", modelLabel))
+
+	// Pre-load image for verifier context (even pass 1 benefits from seeing the image)
+	var verifierImageURI string
+	if interaction.ImageID != "" {
+		verifierImageURI = r.loadImageDataURI(ctx, interaction.ImageID)
+	}
+
+	// ── Pass 1: text-only solve ──
+	inputParts := []a2a.Part{a2a.TextPart(interaction.QuestionText)}
+	solveTask := &a2a.Task{
+		ID:        solveTaskID,
+		AgentID:   "solver",
+		State:     a2a.TaskStateSubmitted,
+		Input:     a2a.Message{Role: "user", Parts: inputParts},
+		Metadata:  task.Metadata,
+		CreatedAt: time.Now().UTC(),
+	}
+
+	fullSolution := r.streamAndCapture(ctx, solver, solveTask, out)
+	emitTransition(out, "solver", "router", solveTaskID, "solver pass 1 finished")
+
+	// ── Verify pass 1 ──
+	if !hasVerifier {
+		log.Printf("[router] no verifier registered — accepting solution as-is")
+		out <- a2a.StreamEvent{Type: "status", State: a2a.TaskStateCompleted}
+		return true
+	}
+	va, isVerifierAgent := verifier.(*VerifierAgent)
+	if !isVerifierAgent {
+		log.Printf("[router] verifier is not a VerifierAgent — accepting solution as-is")
+		out <- a2a.StreamEvent{Type: "status", State: a2a.TaskStateCompleted}
+		return true
+	}
+
+	emitTransition(out, "router", "verifier", solveTaskID, "verifying solution quality")
+	vResult, vComp, vErr := va.Verify(ctx, interaction.QuestionText, fullSolution, verifierImageURI)
+	if vErr != nil {
+		log.Printf("[router] verifier error: %v — accepting solution", vErr)
+		out <- a2a.StreamEvent{Type: "status", State: a2a.TaskStateCompleted}
+		return true
+	}
+	emitVerifierMetadata(out, vResult, vComp, 1)
+
+	if vResult.Score >= MinVerifierScore {
+		log.Printf("[router] verifier pass 1 score=%.2f ≥ %.2f — solution accepted", vResult.Score, MinVerifierScore)
+		out <- a2a.StreamEvent{Type: "status", State: a2a.TaskStateCompleted}
+		return true
+	}
+
+	log.Printf("[router] verifier pass 1 score=%.2f < %.2f — solution needs improvement", vResult.Score, MinVerifierScore)
+
+	// ── Pass 2: retry with image (if available) ──
+	if verifierImageURI == "" {
+		log.Printf("[router] no image available — asking user to pick model")
+		r.emitModelPicker(out, vResult, interaction)
+		return false
+	}
+
+	imageDataURI := verifierImageURI
+
+	emitTransition(out, "router", "solver", solveTaskID,
+		fmt.Sprintf("verifier score %.0f%% — retrying with original image", vResult.Score*100))
+
+	// Signal frontend to start a NEW assistant message for pass 2
+	out <- a2a.StreamEvent{Type: "new_turn"}
+	out <- a2a.StreamEvent{
+		Type: "artifact",
+		Message: &a2a.Message{
+			Role:  "agent",
+			Parts: []a2a.Part{a2a.TextPart("⚠️ *Solution quality was low — retrying with image context...*\n\n")},
+		},
+	}
+
+	inputParts2 := []a2a.Part{
+		a2a.TextPart(interaction.QuestionText),
+		{Type: "image", ImageURL: imageDataURI},
+	}
+	solveTask2 := &a2a.Task{
+		ID:        uuid.New().String(),
+		AgentID:   "solver",
+		State:     a2a.TaskStateSubmitted,
+		Input:     a2a.Message{Role: "user", Parts: inputParts2},
+		Metadata:  task.Metadata,
+		CreatedAt: time.Now().UTC(),
+	}
+
+	fullSolution2 := r.streamAndCapture(ctx, solver, solveTask2, out)
+	emitTransition(out, "solver", "router", solveTask2.ID, "solver pass 2 (with image) finished")
+
+	// ── Verify pass 2 (verifier also gets the image) ──
+	emitTransition(out, "router", "verifier", solveTask2.ID, "verifying solution with image")
+	vResult2, vComp2, vErr2 := va.Verify(ctx, interaction.QuestionText, fullSolution2, verifierImageURI)
+	if vErr2 != nil {
+		log.Printf("[router] verifier pass 2 error: %v — accepting solution", vErr2)
+		out <- a2a.StreamEvent{Type: "status", State: a2a.TaskStateCompleted}
+		return true
+	}
+	emitVerifierMetadata(out, vResult2, vComp2, 2)
+
+	if vResult2.Score >= MinVerifierScore {
+		log.Printf("[router] verifier pass 2 score=%.2f ≥ %.2f — solution accepted", vResult2.Score, MinVerifierScore)
+		out <- a2a.StreamEvent{Type: "status", State: a2a.TaskStateCompleted}
+		return true
+	}
+
+	// ── Still low → ask user to pick a different model ──
+	log.Printf("[router] verifier pass 2 score=%.2f still low — offering model picker", vResult2.Score)
+	r.emitModelPicker(out, vResult2, interaction)
+	return false
+}
+
+// streamAndCapture streams a solver task to the output channel while also
+// capturing all artifact text into a single string for verification.
+func (r *Router) streamAndCapture(ctx context.Context, solver a2a.Agent, task *a2a.Task, out chan<- a2a.StreamEvent) string {
+	// Use an intermediate channel to intercept events
+	intermediate := make(chan a2a.StreamEvent, 128)
+	go func() {
+		solver.HandleStream(ctx, task, intermediate)
+		close(intermediate)
+	}()
+
+	var captured strings.Builder
+	for ev := range intermediate {
+		// Forward everything to the real output
+		out <- ev
+		// Capture artifact text
+		if ev.Type == "artifact" && ev.Message != nil {
+			for _, p := range ev.Message.Parts {
+				if p.Type == "text" {
+					captured.WriteString(p.Text)
+				}
+			}
+		}
+	}
+	return captured.String()
+}
+
+// emitVerifierMetadata sends a metadata event with verifier scores.
+func emitVerifierMetadata(out chan<- a2a.StreamEvent, vr *VerificationResult, comp *llm.CompletionResult, pass int) {
+	meta := map[string]interface{}{
+		"agent":     "verifier",
+		"score":     vr.Score,
+		"threshold": MinVerifierScore,
+		"passed":    vr.Score >= MinVerifierScore,
+		"pass":      pass,
+		"issues":    vr.Issues,
+	}
+	if comp != nil {
+		meta["model"] = comp.Model
+		meta["prompt_tokens"] = comp.Usage.PromptTokens
+		meta["completion_tokens"] = comp.Usage.CompletionTokens
+		meta["total_tokens"] = comp.Usage.TotalTokens
+	}
+	out <- a2a.StreamEvent{Type: "metadata", Meta: meta}
+}
+
+// emitModelPicker sends an input-needed event with the available model options.
+func (r *Router) emitModelPicker(out chan<- a2a.StreamEvent, vr *VerificationResult, interaction *models.Interaction) {
+	out <- a2a.StreamEvent{
+		Type: "artifact",
+		Message: &a2a.Message{
+			Role: "agent",
+			Parts: []a2a.Part{a2a.TextPart(fmt.Sprintf(
+				"\n\n---\n⚠️ *Verifier score: %.0f%% — the solution may have issues: %s*\n\nWould you like to try with a different model?",
+				vr.Score*100, vr.Issues))},
+		},
+	}
+
+	// Build JSON payload for model picker
+	modelsJSON := `["` + strings.Join(r.retryModels, `","`) + `"]`
+	out <- a2a.StreamEvent{
+		Type:  "status",
+		State: a2a.TaskStateInputNeeded,
+		Message: &a2a.Message{
+			Role: "agent",
+			Parts: []a2a.Part{a2a.TextPart(fmt.Sprintf(
+				`{"model_picker":true,"models":%s,"interaction_id":"%s"}`,
+				modelsJSON, interaction.ID))},
+		},
+	}
+}
+
+// handleRetryModel is called when the user picks an alternative model after
+// the verifier rejected the initial solution.
+func (r *Router) handleRetryModel(ctx context.Context, task *a2a.Task, convID, userID string, out chan<- a2a.StreamEvent) {
+	interaction, err := r.store.GetActiveInteraction(ctx, convID)
+	if err != nil || interaction == nil {
+		log.Printf("[router] no active interaction for retry_model, treating as new question")
+		r.handleNewQuestion(ctx, task, convID, userID, out)
+		return
+	}
+
+	modelName := ""
+	if task.Metadata != nil {
+		modelName = task.Metadata["model"]
+	}
+	if modelName == "" {
+		out <- a2a.StreamEvent{Type: "error", Error: "retry_model requires a 'model' in metadata"}
+		return
+	}
+
+	log.Printf("[router] retry_model=%s for interaction=%s", modelName, interaction.ID)
+	emitTransition(out, "router", "solver", task.ID,
+		fmt.Sprintf("student requested retry with model: %s", modelName))
+
+	// Dispatch solver with the selected model
+	completed := r.dispatchSolverWithModel(ctx, task, interaction, modelName, out)
+
+	if completed {
+		if err := r.store.CloseInteraction(ctx, interaction.ID, models.InteractionSolved, models.ExitNeededSolution); err != nil {
+			log.Printf("[router] warn: close interaction: %v", err)
+		}
+	} else {
+		log.Printf("[router] retry_model solver still needs model picker — interaction stays open")
+	}
+}
+
+// ── Image extraction ─────────────────────────────────────────────────
+
+func (r *Router) extractImage(ctx context.Context, task *a2a.Task, out chan<- a2a.StreamEvent) (string, error) {
+	extractor, ok := r.subAgents["image_extraction"]
+	if !ok {
+		return "", fmt.Errorf("image_extraction agent not registered")
+	}
+
+	extractTaskID := uuid.New().String()
+	emitTransition(out, "router", "image_extraction", extractTaskID, "input contains image — extracting text")
+
+	extractTask := &a2a.Task{
+		ID:        extractTaskID,
+		AgentID:   "image_extraction",
+		State:     a2a.TaskStateSubmitted,
+		Input:     task.Input,
+		Metadata:  task.Metadata,
+		CreatedAt: time.Now().UTC(),
+	}
+
+	result, err := extractor.Handle(ctx, extractTask)
+	if err != nil {
+		return "", fmt.Errorf("image extraction failed: %v", err)
+	}
+
+	emitTransition(out, "image_extraction", "router", extractTaskID, "extraction complete")
+
+	if result.Output != nil {
+		for _, p := range result.Output.Parts {
+			if p.Type == "text" {
+				return p.Text, nil
+			}
+		}
+	}
+	return "", fmt.Errorf("image extraction returned no text")
+}
+
+// ── Helpers ──────────────────────────────────────────────────────────
+
+// emitTransition sends a "transition" event to the SSE stream.
+func emitTransition(out chan<- a2a.StreamEvent, from, to, taskID, reason string) {
+	ev := a2a.StreamEvent{
+		Type:      "transition",
+		FromAgent: from,
+		ToAgent:   to,
+		TaskID:    taskID,
+		Reason:    reason,
+	}
+	log.Printf("[a2a] transition %s -> %s  task=%s  reason=%s", from, to, taskID, reason)
+	out <- ev
+}
+
+// hasImageInput checks whether the task input contains an image part.
+func hasImageInput(msg a2a.Message) bool {
+	for _, p := range msg.Parts {
+		if p.Type == "image" && p.ImageURL != "" {
+			return true
+		}
+	}
+	return false
+}
+
+// loadImageDataURI fetches image bytes from the DB and returns a base64 data URI.
+// Returns "" if the image can't be loaded (caller proceeds without vision).
+func (r *Router) loadImageDataURI(ctx context.Context, imageID string) string {
+	img, err := r.store.GetImage(ctx, imageID)
+	if err != nil {
+		log.Printf("[router] failed to load image %s from DB: %v", imageID, err)
+		return ""
+	}
+	b64 := base64.StdEncoding.EncodeToString(img.Data)
+	dataURI := fmt.Sprintf("data:%s;base64,%s", img.MimeType, b64)
+	log.Printf("[router] loaded image %s from DB (%d bytes) for vision retry", imageID, len(img.Data))
+	return dataURI
+}
+
+// extractText gathers all text parts from a message.
+func extractText(msg a2a.Message) string {
+	var parts []string
+	for _, p := range msg.Parts {
+		if p.Type == "text" && p.Text != "" {
+			parts = append(parts, p.Text)
+		}
+	}
+	if len(parts) == 0 {
+		return ""
+	}
+	result := parts[0]
+	for i := 1; i < len(parts); i++ {
+		result += "\n" + parts[i]
+	}
+	return result
+}
