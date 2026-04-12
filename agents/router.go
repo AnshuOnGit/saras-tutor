@@ -2,7 +2,6 @@ package agents
 
 import (
 	"context"
-	"encoding/base64"
 	"fmt"
 	"log/slog"
 	"strings"
@@ -605,7 +604,7 @@ func (r *Router) dispatchSolverWithModel(ctx context.Context, task *a2a.Task, in
 	verifier, hasVerifier := r.subAgents["verifier"]
 
 	solveTaskID := uuid.New().String()
-	modelLabel := r.cfg.OpenAIModelDefault
+	modelLabel := r.cfg.SolverModel
 	if modelOverride != "" {
 		modelLabel = modelOverride
 	}
@@ -831,20 +830,6 @@ func hasImageInput(msg a2a.Message) bool {
 		}
 	}
 	return false
-}
-
-// loadImageDataURI fetches image bytes from the DB and returns a base64 data URI.
-// Returns "" if the image can't be loaded (caller proceeds without vision).
-func (r *Router) loadImageDataURI(ctx context.Context, imageID string) string {
-	img, err := r.store.GetImage(ctx, imageID)
-	if err != nil {
-		slog.Warn("router: failed to load image from DB", "image_id", imageID, "error", err)
-		return ""
-	}
-	b64 := base64.StdEncoding.EncodeToString(img.Data)
-	dataURI := fmt.Sprintf("data:%s;base64,%s", img.MimeType, b64)
-	slog.Debug("router: loaded image from DB", "image_id", imageID, "bytes", len(img.Data))
-	return dataURI
 }
 
 // extractText gathers all text parts from a message.

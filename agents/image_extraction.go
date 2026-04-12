@@ -67,389 +67,46 @@ func (a *ImageExtractionAgent) Card() a2a.AgentCard {
 "- confidence: how certain you are that you extracted ALL content correctly (1.0 = fully certain, lower if image is unclear or you may have missed something).\n" +
 "- content: your full extracted markdown (escape inner quotes as needed)."*/
 
-const imageExtractionPrompt = `
-You are an academic content extraction system. Extract content from the image WITHOUT solving.
+const imageExtractionPrompt = `You are an expert OCR system for JEE/NEET exam questions. Extract ALL content from the image as clean Markdown.
 
-Return ONLY valid JSON (no markdown fences, no extra text). Do not invent unreadable values; use null and explain in "issues".
+RESPOND WITH ONLY THIS JSON (no code fences, no extra text):
+{"confidence": 0.0-1.0, "content": "<markdown here>"}
 
-GOALS:
-1) Faithfully transcribe the problem statement and options.
-2) Extract diagrams/graphs into structured data usable for downstream solving.
+EXTRACTION RULES:
+1. Reproduce the FULL problem statement word-for-word. Do NOT summarise, paraphrase, or add commentary.
+2. Reproduce ALL answer options exactly: (A), (B), (C), (D).
+3. For math use LaTeX: inline $...$ and display $$...$$. Use \frac, \sqrt, \int, \sum, \vec, \overrightarrow, \hat, etc.
+4. NEVER use \( \) or \[ \] delimiters.
+5. For diagrams/figures: describe under "## Diagram" with all labels, vertices, segments, angles, and measurements visible.
+6. For tables: use Markdown tables.
+7. Do NOT solve, explain, or interpret. Only extract.
+8. Keep output concise — no preamble like "The problem statement is" or "The extracted content is".
 
-OUTPUT JSON SCHEMA:
-{
-  "confidence": 0.0-1.0,
-  "issues": [ { "type": "unreadable|cropped|ambiguous|low_contrast|overlap", "detail": "..." } ],
-  "text_markdown": "Problem text and options in Markdown with LaTeX ($ and $$ only). No solving.",
-  "regions": [
-    { "id": "r1", "kind": "question_text|options|diagram|table|other", "bbox_norm": [x1,y1,x2,y2] }
-  ],
-  "diagrams": [
-    {
-      "id": "d1",
-      "type": "graph|geometry|circuit|free_body|reaction_scheme|flowchart|table|unknown",
-      "title": "string or null",
-      "bbox_norm": [x1,y1,x2,y2],
-      "labels": [
-        { "text": "string", "bbox_norm": [x1,y1,x2,y2], "confidence": 0.0-1.0 }
-      ],
-
-      "graph": {
-        "x_axis": { "label": "string|null", "unit": "string|null", "scale": "linear|log|unknown" },
-        "y_axis": { "label": "string|null", "unit": "string|null", "scale": "linear|log|unknown" },
-        "ticks": {
-          "x": [ { "value": "string|null", "pos_norm": 0.0-1.0 } ],
-          "y": [ { "value": "string|null", "pos_norm": 0.0-1.0 } ]
-        },
-        "curves": [
-          {
-            "name": "string|null",
-            "style": "solid|dashed|points|unknown",
-            "points_norm": [ [x,y], [x,y] ],
-            "key_features": {
-              "intercepts": [ { "x": "string|null", "y": "string|null" } ],
-              "asymptotes": [ "string" ],
-              "turning_points": [ { "x": "string|null", "y": "string|null" } ]
-            },
-            "function_hypothesis": { "latex": "string|null", "confidence": 0.0-1.0 }
-          }
-        ]
-      },
-
-      "geometry": {
-        "points": [ { "name": "A", "pos_norm": [x,y] } ],
-        "segments": [ { "from": "A", "to": "B", "length": "string|null" } ],
-        "angles": [ { "at": "A", "between": ["AB","AC"], "value": "string|null" } ],
-        "constraints": [ "string" ]
-      },
-
-      "circuit": {
-        "nodes": [ "n1", "n2" ],
-        "components": [
-          { "ref": "R1", "type": "resistor|capacitor|inductor|source|diode|unknown", "value": "string|null", "pins": { "1": "n1", "2": "n2" } }
-        ],
-        "notes": [ "string" ]
-      },
-
-      "free_body": {
-        "body": "string|null",
-        "forces": [ { "label": "string|null", "direction": "up|down|left|right|angle|unknown", "angle_deg": "string|null" } ]
-      },
-
-      "flowchart_mermaid": "string|null"
-    }
-  ]
-}
-
-RULES:
-- Do NOT solve. Only extract.
-- For math use LaTeX with $...$ and $$...$$ only.
-- If a diagram type is present but uncertain, set type="unknown" and add an issue.
-- Include at least one diagram entry if any non-text figure is visible.
-- If multiple diagrams exist, create multiple entries.
-`
+DOUBLE-CHECK PASS — re-examine the image carefully:
+- Every variable: check for a coefficient (2α, 3β), a preceding fraction (½α → $\frac{1}{2}\alpha$), or sign (+/−).
+- Every \frac: verify numerator and denominator are complete (e.g. $\frac{mv^2}{2}$ not $\frac{mv}{2}$).
+- Every superscript: distinguish x², x³, x⁻¹, x^{1/2}.
+- Every subscript: distinguish S₁ vs S, v₀ vs v.
+- Every option (A)–(D): capture the full expression including trailing terms and units.
+- Vectors: use $\vec{SP}$ or $\overrightarrow{SP}$ as shown in the image.
+- The zero vector: $\vec{0}$ or $\overrightarrow{0}$.
+Apply any corrections directly. Do NOT add commentary about corrections.`
 
 // ---------- Structured response types ----------
 
 type extractionResponse struct {
-	Confidence   float64             `json:"confidence"`
-	Issues       []extractionIssue   `json:"issues"`
-	TextMarkdown string              `json:"text_markdown"`
-	Regions      []json.RawMessage   `json:"regions"`
-	Diagrams     []extractionDiagram `json:"diagrams"`
-}
-
-type extractionIssue struct {
-	Type   string `json:"type"`
-	Detail string `json:"detail"`
-}
-
-type extractionDiagram struct {
-	ID               string           `json:"id"`
-	Type             string           `json:"type"`
-	Title            string           `json:"title"`
-	Graph            *diagramGraph    `json:"graph"`
-	Geometry         *diagramGeometry `json:"geometry"`
-	Circuit          *diagramCircuit  `json:"circuit"`
-	FreeBody         *diagramFreeBody `json:"free_body"`
-	FlowchartMermaid string           `json:"flowchart_mermaid"`
-	Labels           []diagramLabel   `json:"labels"`
-}
-
-type diagramLabel struct {
-	Text       string  `json:"text"`
 	Confidence float64 `json:"confidence"`
-}
-
-type diagramGraph struct {
-	XAxis  *axisInfo   `json:"x_axis"`
-	YAxis  *axisInfo   `json:"y_axis"`
-	Curves []curveInfo `json:"curves"`
-}
-
-type axisInfo struct {
-	Label string `json:"label"`
-	Unit  string `json:"unit"`
-	Scale string `json:"scale"`
-}
-
-type curveInfo struct {
-	Name               string          `json:"name"`
-	Style              string          `json:"style"`
-	KeyFeatures        *curveFeatures  `json:"key_features"`
-	FunctionHypothesis *funcHypothesis `json:"function_hypothesis"`
-}
-
-type curveFeatures struct {
-	Intercepts    []map[string]string `json:"intercepts"`
-	Asymptotes    []string            `json:"asymptotes"`
-	TurningPoints []map[string]string `json:"turning_points"`
-}
-
-type funcHypothesis struct {
-	LaTeX      string  `json:"latex"`
-	Confidence float64 `json:"confidence"`
-}
-
-type diagramGeometry struct {
-	Points      []geoPoint   `json:"points"`
-	Segments    []geoSegment `json:"segments"`
-	Angles      []geoAngle   `json:"angles"`
-	Constraints []string     `json:"constraints"`
-}
-
-type geoPoint struct {
-	Name string `json:"name"`
-}
-
-type geoSegment struct {
-	From   string `json:"from"`
-	To     string `json:"to"`
-	Length string `json:"length"`
-}
-
-type geoAngle struct {
-	At      string   `json:"at"`
-	Between []string `json:"between"`
-	Value   string   `json:"value"`
-}
-
-type diagramCircuit struct {
-	Nodes      []string           `json:"nodes"`
-	Components []circuitComponent `json:"components"`
-	Notes      []string           `json:"notes"`
-}
-
-type circuitComponent struct {
-	Ref   string            `json:"ref"`
-	Type  string            `json:"type"`
-	Value string            `json:"value"`
-	Pins  map[string]string `json:"pins"`
-}
-
-type diagramFreeBody struct {
-	Body   string    `json:"body"`
-	Forces []fbForce `json:"forces"`
-}
-
-type fbForce struct {
-	Label     string `json:"label"`
-	Direction string `json:"direction"`
-	AngleDeg  string `json:"angle_deg"`
+	Content    string  `json:"content"`
 }
 
 // ---------- Convert structured extraction to presentable markdown ----------
 
 func buildMarkdownFromExtraction(resp *extractionResponse) string {
-	var sb strings.Builder
-
-	// Text portion
-	if resp.TextMarkdown != "" {
-		sb.WriteString(resp.TextMarkdown)
-		sb.WriteString("\n\n")
+	content := strings.TrimSpace(resp.Content)
+	if content == "" {
+		return "(No content extracted from image)"
 	}
-
-	// Issues / warnings
-	if len(resp.Issues) > 0 {
-		sb.WriteString("## ⚠ Extraction Notes\n\n")
-		for _, iss := range resp.Issues {
-			sb.WriteString(fmt.Sprintf("- **%s**: %s\n", iss.Type, iss.Detail))
-		}
-		sb.WriteString("\n")
-	}
-
-	// Diagrams
-	for _, d := range resp.Diagrams {
-		title := d.Title
-		if title == "" {
-			title = fmt.Sprintf("Diagram %s (%s)", d.ID, d.Type)
-		}
-		sb.WriteString(fmt.Sprintf("## %s\n\n", title))
-
-		// Labels
-		if len(d.Labels) > 0 {
-			sb.WriteString("**Labels:** ")
-			var lbls []string
-			for _, l := range d.Labels {
-				lbls = append(lbls, l.Text)
-			}
-			sb.WriteString(strings.Join(lbls, ", "))
-			sb.WriteString("\n\n")
-		}
-
-		// Graph
-		if d.Graph != nil {
-			g := d.Graph
-			if g.XAxis != nil {
-				label := g.XAxis.Label
-				if g.XAxis.Unit != "" {
-					label += " (" + g.XAxis.Unit + ")"
-				}
-				sb.WriteString(fmt.Sprintf("- **X-axis**: %s", label))
-				if g.XAxis.Scale != "" && g.XAxis.Scale != "linear" {
-					sb.WriteString(fmt.Sprintf(" [%s]", g.XAxis.Scale))
-				}
-				sb.WriteString("\n")
-			}
-			if g.YAxis != nil {
-				label := g.YAxis.Label
-				if g.YAxis.Unit != "" {
-					label += " (" + g.YAxis.Unit + ")"
-				}
-				sb.WriteString(fmt.Sprintf("- **Y-axis**: %s", label))
-				if g.YAxis.Scale != "" && g.YAxis.Scale != "linear" {
-					sb.WriteString(fmt.Sprintf(" [%s]", g.YAxis.Scale))
-				}
-				sb.WriteString("\n")
-			}
-			for i, c := range g.Curves {
-				name := c.Name
-				if name == "" {
-					name = fmt.Sprintf("Curve %d", i+1)
-				}
-				sb.WriteString(fmt.Sprintf("\n### %s", name))
-				if c.Style != "" {
-					sb.WriteString(fmt.Sprintf(" (%s)", c.Style))
-				}
-				sb.WriteString("\n")
-				if c.FunctionHypothesis != nil && c.FunctionHypothesis.LaTeX != "" {
-					sb.WriteString(fmt.Sprintf("$$%s$$\n", c.FunctionHypothesis.LaTeX))
-				}
-				if c.KeyFeatures != nil {
-					if len(c.KeyFeatures.Intercepts) > 0 {
-						sb.WriteString("- **Intercepts**: ")
-						var parts []string
-						for _, ic := range c.KeyFeatures.Intercepts {
-							if ic["x"] != "" && ic["y"] != "" {
-								parts = append(parts, fmt.Sprintf("(%s, %s)", ic["x"], ic["y"]))
-							} else if ic["x"] != "" {
-								parts = append(parts, fmt.Sprintf("x = %s", ic["x"]))
-							} else if ic["y"] != "" {
-								parts = append(parts, fmt.Sprintf("y = %s", ic["y"]))
-							}
-						}
-						sb.WriteString(strings.Join(parts, ", "))
-						sb.WriteString("\n")
-					}
-					if len(c.KeyFeatures.Asymptotes) > 0 {
-						sb.WriteString("- **Asymptotes**: " + strings.Join(c.KeyFeatures.Asymptotes, ", ") + "\n")
-					}
-					if len(c.KeyFeatures.TurningPoints) > 0 {
-						sb.WriteString("- **Turning points**: ")
-						var parts []string
-						for _, tp := range c.KeyFeatures.TurningPoints {
-							parts = append(parts, fmt.Sprintf("(%s, %s)", tp["x"], tp["y"]))
-						}
-						sb.WriteString(strings.Join(parts, ", "))
-						sb.WriteString("\n")
-					}
-				}
-			}
-			sb.WriteString("\n")
-		}
-
-		// Geometry
-		if d.Geometry != nil {
-			geo := d.Geometry
-			if len(geo.Points) > 0 {
-				var names []string
-				for _, p := range geo.Points {
-					names = append(names, p.Name)
-				}
-				sb.WriteString("- **Points**: " + strings.Join(names, ", ") + "\n")
-			}
-			if len(geo.Segments) > 0 {
-				for _, s := range geo.Segments {
-					line := fmt.Sprintf("- Segment %s→%s", s.From, s.To)
-					if s.Length != "" {
-						line += fmt.Sprintf(" = %s", s.Length)
-					}
-					sb.WriteString(line + "\n")
-				}
-			}
-			if len(geo.Angles) > 0 {
-				for _, a := range geo.Angles {
-					line := fmt.Sprintf("- Angle at %s", a.At)
-					if a.Value != "" {
-						line += fmt.Sprintf(" = %s", a.Value)
-					}
-					sb.WriteString(line + "\n")
-				}
-			}
-			if len(geo.Constraints) > 0 {
-				sb.WriteString("- **Constraints**: " + strings.Join(geo.Constraints, "; ") + "\n")
-			}
-			sb.WriteString("\n")
-		}
-
-		// Circuit
-		if d.Circuit != nil {
-			cir := d.Circuit
-			if len(cir.Components) > 0 {
-				sb.WriteString("| Ref | Type | Value | Pins |\n")
-				sb.WriteString("|-----|------|-------|------|\n")
-				for _, comp := range cir.Components {
-					var pins []string
-					for k, v := range comp.Pins {
-						pins = append(pins, fmt.Sprintf("%s→%s", k, v))
-					}
-					sb.WriteString(fmt.Sprintf("| %s | %s | %s | %s |\n",
-						comp.Ref, comp.Type, comp.Value, strings.Join(pins, ", ")))
-				}
-			}
-			if len(cir.Notes) > 0 {
-				for _, n := range cir.Notes {
-					sb.WriteString(fmt.Sprintf("- %s\n", n))
-				}
-			}
-			sb.WriteString("\n")
-		}
-
-		// Free-body diagram
-		if d.FreeBody != nil {
-			fb := d.FreeBody
-			if fb.Body != "" {
-				sb.WriteString(fmt.Sprintf("**Body**: %s\n\n", fb.Body))
-			}
-			if len(fb.Forces) > 0 {
-				sb.WriteString("| Force | Direction | Angle |\n")
-				sb.WriteString("|-------|-----------|-------|\n")
-				for _, f := range fb.Forces {
-					sb.WriteString(fmt.Sprintf("| %s | %s | %s |\n", f.Label, f.Direction, f.AngleDeg))
-				}
-			}
-			sb.WriteString("\n")
-		}
-
-		// Mermaid flowchart
-		if d.FlowchartMermaid != "" {
-			sb.WriteString("```mermaid\n")
-			sb.WriteString(d.FlowchartMermaid)
-			sb.WriteString("\n```\n\n")
-		}
-	}
-
-	return strings.TrimSpace(sb.String())
+	return content
 }
 
 // fixLaTeXInMarkdown repairs LaTeX commands whose leading backslash was
@@ -537,12 +194,12 @@ func (a *ImageExtractionAgent) Handle(ctx context.Context, task *a2a.Task) (*a2a
 	}
 
 	slog.Info("image_extraction result",
-		"confidence", resp.Confidence, "issues", len(resp.Issues), "diagrams", len(resp.Diagrams))
+		"confidence", resp.Confidence, "content_len", len(resp.Content))
 
 	// Repair any LaTeX commands whose backslash was interpreted as a
 	// JSON control character (e.g. form-feed from \frac, tab from \theta).
-	if resp.TextMarkdown != "" {
-		resp.TextMarkdown = fixLaTeXInMarkdown(resp.TextMarkdown)
+	if resp.Content != "" {
+		resp.Content = fixLaTeXInMarkdown(resp.Content)
 	}
 
 	// Check confidence threshold

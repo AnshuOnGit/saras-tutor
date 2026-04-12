@@ -72,16 +72,20 @@ type ChatHandler struct {
 func NewChatHandler(cfg *config.Config, pool *pgxpool.Pool) *ChatHandler {
 	store := db.NewStore(pool)
 
-	// Build LLM clients (each agent can use a different model)
-	defaultLLM := llm.NewClient(cfg.LLMAPIKey, cfg.OpenAIModelDefault, cfg.LLMBaseURL, cfg.LLMUserID)
+	// Build LLM clients — three tiers:
+	//   visionLLM  → image extraction (heavy VLM)
+	//   solverLLM  → solver + hint agents (math-strong model)
+	//   routerLLM  → validator, parser, verifier, evaluator (fast/cheap)
 	visionLLM := llm.NewClient(cfg.LLMAPIKey, cfg.VisionModel, cfg.LLMBaseURL, cfg.LLMUserID)
+	solverLLM := llm.NewClient(cfg.LLMAPIKey, cfg.SolverModel, cfg.LLMBaseURL, cfg.LLMUserID)
+	routerLLM := llm.NewClient(cfg.LLMAPIKey, cfg.RouterModel, cfg.LLMBaseURL, cfg.LLMUserID)
 
 	// Create sub-agents
 	imgAgent := agents.NewImageExtractionAgent(visionLLM, store)
-	solverAgent := agents.NewSolverAgent(defaultLLM, store)
-	verifierAgent := agents.NewVerifierAgent(defaultLLM, store)
-	hintAgent := agents.NewHintAgent(defaultLLM, store)
-	evaluatorAgent := agents.NewAttemptEvaluatorAgent(defaultLLM, visionLLM, store)
+	solverAgent := agents.NewSolverAgent(solverLLM, store)
+	verifierAgent := agents.NewVerifierAgent(routerLLM, store)
+	hintAgent := agents.NewHintAgent(solverLLM, store)
+	evaluatorAgent := agents.NewAttemptEvaluatorAgent(routerLLM, visionLLM, store)
 
 	subAgents := map[string]a2a.Agent{
 		imgAgent.Card().ID:       imgAgent,
@@ -91,8 +95,8 @@ func NewChatHandler(cfg *config.Config, pool *pgxpool.Pool) *ChatHandler {
 		evaluatorAgent.Card().ID: evaluatorAgent,
 	}
 
-	// Deterministic router — uses defaultLLM for lightweight utility calls (validation)
-	router := agents.NewRouter(store, cfg, defaultLLM, subAgents)
+	// Deterministic router — uses routerLLM for lightweight utility calls (validation, parsing)
+	router := agents.NewRouter(store, cfg, routerLLM, subAgents)
 
 	return &ChatHandler{
 		cfg:    cfg,
