@@ -4,7 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"log"
+	"log/slog"
 	"strings"
 
 	"saras-tutor/a2a"
@@ -452,6 +452,36 @@ func buildMarkdownFromExtraction(resp *extractionResponse) string {
 	return strings.TrimSpace(sb.String())
 }
 
+// fixLaTeXInMarkdown repairs LaTeX commands whose leading backslash was
+// silently converted to a control character by json.Unmarshal.
+//
+// For example, if the LLM writes \frac in a JSON string without double-escaping,
+// Go parses \f as form-feed (U+000C) + "rac" → this function restores it to \frac.
+// Form-feed and backspace NEVER appear in valid Markdown, so replacing is safe.
+// For tab and carriage-return we only replace when followed by a lowercase letter
+// (heuristic: \theta, \text, \rho, \right etc.).
+func fixLaTeXInMarkdown(s string) string {
+	var b strings.Builder
+	b.Grow(len(s))
+	runes := []rune(s)
+	for i := 0; i < len(runes); i++ {
+		ch := runes[i]
+		switch {
+		case ch == '\x0c': // form feed → \f  (\frac, \forall, \flat …)
+			b.WriteString("\\f")
+		case ch == '\x08': // backspace → \b  (\beta, \bar, \begin, \binom …)
+			b.WriteString("\\b")
+		case ch == '\r' && i+1 < len(runes) && runes[i+1] >= 'a' && runes[i+1] <= 'z':
+			b.WriteString("\\r") // CR + letter → \rho, \right …
+		case ch == '\t' && i+1 < len(runes) && runes[i+1] >= 'a' && runes[i+1] <= 'z':
+			b.WriteString("\\t") // tab + letter → \theta, \text, \times …
+		default:
+			b.WriteRune(ch)
+		}
+	}
+	return b.String()
+}
+
 // Handle processes an image extraction task synchronously.
 func (a *ImageExtractionAgent) Handle(ctx context.Context, task *a2a.Task) (*a2a.Task, error) {
 	// Build multi-modal message with image parts
@@ -488,10 +518,15 @@ func (a *ImageExtractionAgent) Handle(ctx context.Context, task *a2a.Task) (*a2a
 		}
 	}
 
+	// Sanitize JSON — LLMs emit LaTeX backslash commands (\frac, \theta …)
+	// without the double-escaping JSON requires, corrupting them into control
+	// characters on json.Unmarshal.  extractJSONObject fixes this.
+	extracted = extractJSONObject(extracted)
+
 	// Parse structured JSON
 	var resp extractionResponse
 	if err := json.Unmarshal([]byte(extracted), &resp); err != nil {
-		log.Printf("[image_extraction] JSON parse failed, using raw text: %v", err)
+		slog.Warn("image_extraction: JSON parse failed, using raw text", "error", err)
 		// Fallback: use raw text directly
 		task.State = a2a.TaskStateCompleted
 		task.Output = &a2a.Message{
@@ -501,8 +536,14 @@ func (a *ImageExtractionAgent) Handle(ctx context.Context, task *a2a.Task) (*a2a
 		return task, nil
 	}
 
-	log.Printf("[image_extraction] confidence=%.2f issues=%d diagrams=%d",
-		resp.Confidence, len(resp.Issues), len(resp.Diagrams))
+	slog.Info("image_extraction result",
+		"confidence", resp.Confidence, "issues", len(resp.Issues), "diagrams", len(resp.Diagrams))
+
+	// Repair any LaTeX commands whose backslash was interpreted as a
+	// JSON control character (e.g. form-feed from \frac, tab from \theta).
+	if resp.TextMarkdown != "" {
+		resp.TextMarkdown = fixLaTeXInMarkdown(resp.TextMarkdown)
+	}
 
 	// Check confidence threshold
 	if resp.Confidence < 0.6 {

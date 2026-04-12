@@ -3,7 +3,7 @@ package agents
 import (
 	"context"
 	"fmt"
-	"log"
+	"log/slog"
 	"strings"
 
 	"saras-tutor/a2a"
@@ -152,7 +152,7 @@ func (a *HintAgent) Handle(ctx context.Context, task *a2a.Task) (*a2a.Task, erro
 		return task, fmt.Errorf("hint: %w", err)
 	}
 
-	log.Printf("[hint] level=%d question_len=%d response_len=%d", level, len(question), len(raw.Content))
+	slog.Info("hint generated", "level", level, "question_len", len(question), "response_len", len(raw.Content))
 
 	task.State = a2a.TaskStateCompleted
 	task.Output = &a2a.Message{
@@ -200,12 +200,12 @@ func (a *HintAgent) HandleStream(ctx context.Context, task *a2a.Task, out chan<-
 				},
 			},
 		}
-		log.Printf("[hint] streaming hint level=%d with image (vision mode)", level)
+		slog.Info("hint: streaming with image", "level", level)
 	} else {
 		messages = []llm.ChatMessage{
 			{Role: "user", Content: fmt.Sprintf(prompt, question)},
 		}
-		log.Printf("[hint] streaming hint level=%d text-only", level)
+		slog.Info("hint: streaming text-only", "level", level)
 	}
 
 	err := a.llmClient.StreamComplete(ctx, messages, func(token string) error {

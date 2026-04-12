@@ -9,7 +9,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
-	"log"
+	"log/slog"
 	"net/http"
 	"strings"
 )
@@ -173,7 +173,7 @@ func (c *Client) Complete(ctx context.Context, messages []ChatMessage) (*Complet
 	if model == "" {
 		model = c.Model
 	}
-	log.Printf("[llm] model=%s tokens=%d response_length=%d", model, cr.Usage.TotalTokens, len(content))
+	slog.Info("llm complete", "model", model, "tokens", cr.Usage.TotalTokens, "response_len", len(content))
 	return &CompletionResult{
 		Content: content,
 		Model:   model,
@@ -232,6 +232,6 @@ func (c *Client) StreamComplete(ctx context.Context, messages []ChatMessage, onT
 			}
 		}
 	}
-	log.Printf("[llm-stream] model=%s response_length=%d response:\n%s", c.Model, full.Len(), full.String())
+	slog.Debug("llm stream complete", "model", c.Model, "response_len", full.Len())
 	return scanner.Err()
 }

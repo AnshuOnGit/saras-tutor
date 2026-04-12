@@ -3,7 +3,7 @@ package agents
 import (
 	"context"
 	"fmt"
-	"log"
+	"log/slog"
 	"strings"
 
 	"saras-tutor/a2a"
@@ -106,13 +106,13 @@ func (a *SolverAgent) HandleStream(ctx context.Context, task *a2a.Task, out chan
 				},
 			},
 		}
-		log.Printf("[solver] streaming solution with image (vision mode)")
+		slog.Info("solver: streaming with image (vision mode)")
 	} else {
 		messages = []llm.ChatMessage{
 			{Role: "system", Content: solverSystemPrompt},
 			{Role: "user", Content: question},
 		}
-		log.Printf("[solver] streaming solution text-only")
+		slog.Info("solver: streaming text-only")
 	}
 
 	err := a.llmClient.StreamComplete(ctx, messages, func(token string) error {

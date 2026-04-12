@@ -5,7 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
-	"log"
+	"log/slog"
 	"net/http"
 	"strings"
 	"time"
@@ -131,7 +131,7 @@ func (h *ChatHandler) Handle(c *gin.Context) {
 			c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to create conversation"})
 			return
 		}
-		log.Printf("[chat] new conversation id=%s user=%s session=%s", conv.ID, conv.UserID, conv.SessionID)
+		slog.Info("new conversation", "id", conv.ID, "user", conv.UserID, "session", conv.SessionID)
 	}
 
 	// Persist the user message
@@ -167,7 +167,7 @@ func (h *ChatHandler) Handle(c *gin.Context) {
 		CreatedAt:      time.Now().UTC(),
 	}
 	if err := h.store.SaveMessage(ctx, userMsg); err != nil {
-		log.Printf("[chat] failed to save user message: %v", err)
+		slog.Warn("failed to save user message", "error", err)
 	}
 
 	// If an image file was uploaded, store it in the DB
@@ -183,12 +183,12 @@ func (h *ChatHandler) Handle(c *gin.Context) {
 			CreatedAt:      time.Now().UTC(),
 		}
 		if err := h.store.SaveImage(ctx, img); err != nil {
-			log.Printf("[chat] failed to save image: %v", err)
+			slog.Error("failed to save image", "error", err)
 			c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to store image"})
 			return
 		}
 		imageID = img.ID
-		log.Printf("[chat] stored image id=%s size=%d mime=%s", img.ID, len(parsed.ImageData), parsed.ImageMime)
+		slog.Info("stored image", "id", img.ID, "size", len(parsed.ImageData), "mime", parsed.ImageMime)
 	}
 
 	// Build A2A task
@@ -272,7 +272,7 @@ func (h *ChatHandler) Handle(c *gin.Context) {
 			CreatedAt:      time.Now().UTC(),
 		}
 		if err := h.store.SaveMessage(ctx, assistantMsg); err != nil {
-			log.Printf("[chat] failed to save assistant message: %v", err)
+			slog.Warn("failed to save assistant message", "error", err)
 		}
 	}
 }
@@ -319,7 +319,7 @@ func (h *ChatHandler) parseRequest(c *gin.Context) (*chatParsed, error) {
 			// Resize if too large (max 1568px on longest side)
 			resizedBytes, resizedMime, resizeErr := resizeImage(imageBytes, mimeType)
 			if resizeErr != nil {
-				log.Printf("[chat] image resize failed, using original: %v", resizeErr)
+				slog.Warn("image resize failed, using original", "error", resizeErr)
 				// Fall through with original bytes
 			} else {
 				imageBytes = resizedBytes

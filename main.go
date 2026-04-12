@@ -1,7 +1,7 @@
 package main
 
 import (
-	"log"
+	"log/slog"
 	"os"
 
 	"saras-tutor/config"
@@ -14,6 +14,9 @@ import (
 )
 
 func main() {
+	// Structured JSON logging for production
+	slog.SetDefault(slog.New(slog.NewJSONHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelInfo})))
+
 	// Load .env if present (ignored in production)
 	_ = godotenv.Load()
 
@@ -22,18 +25,21 @@ func main() {
 	// Initialise Postgres connection pool
 	pool, err := db.NewPool(cfg.DatabaseURL)
 	if err != nil {
-		log.Fatalf("failed to connect to database: %v", err)
+		slog.Error("failed to connect to database", "error", err)
+		os.Exit(1)
 	}
 	defer pool.Close()
 
 	// Run migrations
 	if err := db.Migrate(pool); err != nil {
-		log.Fatalf("failed to run migrations: %v", err)
+		slog.Error("failed to run migrations", "error", err)
+		os.Exit(1)
 	}
 
 	// Seed topic taxonomy (idempotent — skips if already populated)
 	if err := db.Seed(pool); err != nil {
-		log.Fatalf("failed to seed taxonomy: %v", err)
+		slog.Error("failed to seed taxonomy", "error", err)
+		os.Exit(1)
 	}
 
 	r := gin.Default()
@@ -55,9 +61,9 @@ func main() {
 	if port == "" {
 		port = "8080"
 	}
-	log.Printf("saras-tutor listening on :%s", port)
+	slog.Info("saras-tutor listening", "port", port)
 	if err := r.Run(":" + port); err != nil {
-		log.Fatalf("server error: %v", err)
+		slog.Error("server error", "error", err)
 		os.Exit(1)
 	}
 }

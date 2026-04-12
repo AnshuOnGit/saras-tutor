@@ -3,7 +3,7 @@ package db
 import (
 	"context"
 	"fmt"
-	"log"
+	"log/slog"
 
 	"github.com/jackc/pgx/v5/pgxpool"
 )
@@ -46,7 +46,7 @@ func Seed(pool *pgxpool.Pool) error {
 		return fmt.Errorf("seed: check existing: %w", err)
 	}
 	if count > 0 {
-		log.Println("seed: taxonomy already populated, skipping")
+		slog.Info("seed: taxonomy already populated, skipping")
 		return nil
 	}
 
@@ -107,7 +107,7 @@ func Seed(pool *pgxpool.Pool) error {
 	if err := tx.Commit(ctx); err != nil {
 		return fmt.Errorf("seed: commit: %w", err)
 	}
-	log.Printf("seed: inserted %d topics across %d subjects", total, len(subjects))
+	slog.Info("seed: taxonomy inserted", "topics", total, "subjects", len(subjects))
 	return nil
 }
 

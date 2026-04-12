@@ -6,6 +6,9 @@ import rehypeKatex from "rehype-katex";
 import mermaid from "mermaid";
 import "katex/dist/katex.min.css";
 
+const MERMAID_DIAGRAM_START =
+  /^(flowchart|graph|sequenceDiagram|classDiagram|stateDiagram(?:-v2)?|erDiagram|journey|gantt|pie|mindmap|timeline|quadrantChart|xychart-beta|packet-beta|block-beta|architecture|requirementDiagram|gitGraph|kanban|sankey-beta|C4Context|C4Container|C4Component|C4Dynamic|C4Deployment)\b/;
+
 // Initialise Mermaid once — dark-mode aware
 mermaid.initialize({
   startOnLoad: false,
@@ -40,6 +43,15 @@ function preprocessMath(text) {
 
     let segment = parts[i];
 
+    // ── Fix corrupted LaTeX from JSON-parsing ────────────────────────
+    // When an LLM writes \frac in a JSON string without double-escaping,
+    // \f becomes a form-feed char, \b becomes backspace, etc.
+    // Restore them so KaTeX can render the commands.
+    segment = segment.replace(/\f/g,   '\\f');    // form feed  → \f
+    segment = segment.replace(/\x08/g, '\\b');    // backspace  → \b
+    segment = segment.replace(/\r(?=[a-z])/g, '\\r');  // CR + letter → \r
+    segment = segment.replace(/\t(?=[a-z])/g, '\\t');  // tab + letter → \t
+
     // Display math: \[ … \]  (may span multiple lines)
     segment = segment.replace(
       /\\\[([\s\S]*?)\\\]/g,
@@ -58,6 +70,37 @@ function preprocessMath(text) {
   return parts.join("");
 }
 
+function escapeHtml(text) {
+  return text
+    .replaceAll("&", "&amp;")
+    .replaceAll("<", "&lt;")
+    .replaceAll(">", "&gt;");
+}
+
+function normalizeMermaid(code) {
+  const cleaned = code
+    .replace(/\r\n/g, "\n")
+    .replace(/^```mermaid\s*/i, "")
+    .replace(/^```\s*/i, "")
+    .replace(/```\s*$/i, "")
+    .replace(/[“”]/g, '"')
+    .replace(/[‘’]/g, "'")
+    .replace(/[–—]/g, "-")
+    .replace(/\t/g, "  ")
+    .trim();
+
+  const lines = cleaned.split("\n");
+  const startIndex = lines.findIndex((line) =>
+    MERMAID_DIAGRAM_START.test(line.trim())
+  );
+
+  if (startIndex === -1) {
+    return cleaned;
+  }
+
+  return lines.slice(startIndex).join("\n").trim();
+}
+
 /**
  * MermaidBlock renders a ```mermaid code fence as an SVG diagram.
  * Each block gets a unique id so Mermaid can target it.
@@ -68,17 +111,20 @@ function MermaidBlock({ code }) {
 
   useEffect(() => {
     let cancelled = false;
+    const normalizedCode = normalizeMermaid(code);
 
     async function render() {
-      if (!containerRef.current || !code.trim()) return;
+      if (!containerRef.current || !normalizedCode) return;
       try {
-        const { svg } = await mermaid.render(`mermaid${uniqueId}`, code.trim());
+        await mermaid.parse(normalizedCode, { suppressErrors: false });
+        const { svg } = await mermaid.render(`mermaid${uniqueId}`, normalizedCode);
         if (!cancelled && containerRef.current) {
           containerRef.current.innerHTML = svg;
         }
       } catch (err) {
         if (!cancelled && containerRef.current) {
-          containerRef.current.innerHTML = `<pre class="mermaid-error">Diagram error: ${err.message}</pre>`;
+          const message = err?.message || "Invalid Mermaid diagram";
+          containerRef.current.innerHTML = `<div><pre class="mermaid-error">Diagram preview unavailable: ${escapeHtml(message)}</pre><pre class="language-mermaid"><code>${escapeHtml(normalizedCode)}</code></pre></div>`;
         }
       }
     }

@@ -7,7 +7,7 @@ import (
 	"image/jpeg"
 	"image/png"
 	"io"
-	"log"
+	"log/slog"
 	"math"
 
 	"golang.org/x/image/draw"
@@ -33,7 +33,7 @@ func resizeImage(raw []byte, inputMime string) ([]byte, string, error) {
 	origH := bounds.Dy()
 
 	if origW <= maxImageDimension && origH <= maxImageDimension {
-		log.Printf("[resize] image %dx%d (%s) within limit — no resize needed", origW, origH, format)
+		slog.Debug("resize: within limit", "width", origW, "height", origH, "format", format)
 		return raw, inputMime, nil
 	}
 
@@ -45,7 +45,10 @@ func resizeImage(raw []byte, inputMime string) ([]byte, string, error) {
 	newW := int(math.Round(float64(origW) * scale))
 	newH := int(math.Round(float64(origH) * scale))
 
-	log.Printf("[resize] image %dx%d → %dx%d (scale=%.2f, format=%s)", origW, origH, newW, newH, scale, format)
+	slog.Info("resize: scaling image",
+		"orig_w", origW, "orig_h", origH,
+		"new_w", newW, "new_h", newH,
+		"scale", fmt.Sprintf("%.2f", scale), "format", format)
 
 	// Resize using high-quality CatmullRom interpolation
 	dst := image.NewRGBA(image.Rect(0, 0, newW, newH))
@@ -68,8 +71,9 @@ func resizeImage(raw []byte, inputMime string) ([]byte, string, error) {
 		return nil, "", fmt.Errorf("encode resized image: %w", err)
 	}
 
-	log.Printf("[resize] resized: %d bytes → %d bytes (%.0f%% reduction)",
-		len(raw), buf.Len(), (1-float64(buf.Len())/float64(len(raw)))*100)
+	slog.Info("resize: complete",
+		"original_bytes", len(raw), "resized_bytes", buf.Len(),
+		"reduction_pct", fmt.Sprintf("%.0f", (1-float64(buf.Len())/float64(len(raw)))*100))
 
 	return buf.Bytes(), outMime, nil
 }

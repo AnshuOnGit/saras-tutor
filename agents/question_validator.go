@@ -4,7 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"log"
+	"log/slog"
 	"strings"
 
 	"saras-tutor/llm"
@@ -46,7 +46,7 @@ func ValidateQuestion(ctx context.Context, client *llm.Client, question string) 
 
 	comp, err := client.Complete(ctx, messages)
 	if err != nil {
-		log.Printf("[validator] LLM call failed — allowing question as fallback: %v", err)
+		slog.Warn("validator: LLM call failed, allowing as fallback", "error", err)
 		return &ValidationResult{Valid: true, Reason: "validation skipped (LLM error)"}, nil
 	}
 
@@ -62,12 +62,11 @@ func ValidateQuestion(ctx context.Context, client *llm.Client, question string) 
 
 	var result ValidationResult
 	if err := json.Unmarshal([]byte(raw), &result); err != nil {
-		log.Printf("[validator] JSON parse failed — allowing question as fallback: %v (raw: %s)", err, raw)
+		slog.Warn("validator: JSON parse failed, allowing as fallback", "error", err, "raw", raw)
 		return &ValidationResult{Valid: true, Reason: "validation skipped (parse error)"}, nil
 	}
 
-	log.Printf("[validator] valid=%t subject=%q reason=%q tokens=%d",
-		result.Valid, result.Subject, result.Reason, comp.Usage.TotalTokens)
+	slog.Info("validator result", "valid", result.Valid, "subject", result.Subject, "reason", result.Reason, "tokens", comp.Usage.TotalTokens)
 	return &result, nil
 }
 

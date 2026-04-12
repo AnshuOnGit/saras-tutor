@@ -4,7 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"log"
+	"log/slog"
 	"strings"
 
 	"saras-tutor/a2a"
@@ -85,7 +85,7 @@ func (a *VerifierAgent) Verify(ctx context.Context, question, solution, imageDat
 				},
 			},
 		}
-		log.Printf("[verifier] running with image context")
+		slog.Info("verifier: running with image context")
 	} else {
 		messages = []llm.ChatMessage{
 			{Role: "system", Content: verifierSystemPrompt},
@@ -100,11 +100,10 @@ func (a *VerifierAgent) Verify(ctx context.Context, question, solution, imageDat
 
 	result, parseErr := parseVerificationJSON(comp.Content)
 	if parseErr != nil {
-		log.Printf("[verifier] JSON parse warning: %v — using fallback score=1.0", parseErr)
+		slog.Warn("verifier: JSON parse failed, using fallback", "error", parseErr)
 	}
 
-	log.Printf("[verifier] score=%.2f issues=%q model=%s tokens=%d",
-		result.Score, result.Issues, comp.Model, comp.Usage.TotalTokens)
+	slog.Info("verifier result", "score", result.Score, "issues", result.Issues, "model", comp.Model, "tokens", comp.Usage.TotalTokens)
 
 	return result, comp, nil
 }

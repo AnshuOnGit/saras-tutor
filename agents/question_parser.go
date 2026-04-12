@@ -4,7 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"log"
+	"log/slog"
 	"strconv"
 	"strings"
 
@@ -243,6 +243,140 @@ func anyToStringMap(raw any) map[string]string {
 	return out
 }
 
+// extractJSONObject finds the first JSON object in raw text and sanitizes
+// invalid escape sequences that LLMs produce (e.g. LaTeX \( \) \[ \]).
+func extractJSONObject(raw string) string {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return raw
+	}
+	start := strings.Index(raw, "{")
+	end := strings.LastIndex(raw, "}")
+	if start >= 0 && end > start {
+		raw = strings.TrimSpace(raw[start : end+1])
+	}
+	return sanitizeJSONString(raw)
+}
+
+// sanitizeJSONString fixes two classes of problems LLMs produce in JSON:
+//  1. Literal newlines/tabs inside string values (must be \n / \t).
+//  2. Invalid backslash escapes like \( \) \[ \] from LaTeX.
+//
+// It tracks whether we are inside a JSON string (between unescaped quotes)
+// and only modifies characters that appear inside strings.
+func sanitizeJSONString(s string) string {
+	var b strings.Builder
+	b.Grow(len(s) + 64)
+
+	inString := false
+	runes := []rune(s)
+
+	for i := 0; i < len(runes); i++ {
+		ch := runes[i]
+
+		if !inString {
+			if ch == '"' {
+				inString = true
+			}
+			b.WriteRune(ch)
+			continue
+		}
+
+		// We are inside a JSON string value.
+		switch ch {
+		case '"':
+			// End of string
+			inString = false
+			b.WriteRune(ch)
+
+		case '\\':
+			// Backslash inside string — check what follows
+			if i+1 >= len(runes) {
+				b.WriteString("\\\\")
+				continue
+			}
+			next := runes[i+1]
+			switch next {
+			case '"', '\\', '/':
+				// Always-valid JSON escapes — keep as-is
+				b.WriteRune(ch)
+				b.WriteRune(next)
+				i++
+			case 'b', 'f', 'n', 'r', 't':
+				// These are valid JSON escapes (backspace, form-feed, newline,
+				// carriage-return, tab) BUT also the first letter of very common
+				// LaTeX commands (\frac, \theta, \beta, \nu, \rho …).
+				//
+				// Heuristic: if the character *after* the escape letter is a
+				// lowercase letter, the LLM almost certainly meant a LaTeX
+				// command, not a JSON control character → double-escape so
+				// json.Unmarshal preserves the backslash.
+				isLaTeX := false
+				if i+2 < len(runes) {
+					after := runes[i+2]
+					if after >= 'a' && after <= 'z' {
+						isLaTeX = true
+					}
+				}
+				if isLaTeX {
+					b.WriteString("\\\\")
+					b.WriteRune(next)
+					i++
+				} else {
+					b.WriteRune(ch)
+					b.WriteRune(next)
+					i++
+				}
+			case 'u':
+				// \uXXXX — valid only if followed by 4 hex digits
+				if i+5 < len(runes) {
+					hex := string(runes[i+2 : i+6])
+					valid := true
+					for _, h := range hex {
+						if !((h >= '0' && h <= '9') || (h >= 'a' && h <= 'f') || (h >= 'A' && h <= 'F')) {
+							valid = false
+							break
+						}
+					}
+					if valid {
+						b.WriteRune(ch)
+						b.WriteRune(next)
+						i++
+						continue
+					}
+				}
+				b.WriteString("\\\\u")
+				i++
+			default:
+				// invalid escape like \( \) \[ \] — double-escape
+				b.WriteString("\\\\")
+				b.WriteRune(next)
+				i++
+			}
+
+		case '\n':
+			// literal newline inside string — replace with escape
+			b.WriteString("\\n")
+		case '\r':
+			b.WriteString("\\r")
+		case '\t':
+			b.WriteString("\\t")
+
+		default:
+			b.WriteRune(ch)
+		}
+	}
+
+	return b.String()
+}
+
+func truncate(s string, n int) string {
+	if len(s) <= n {
+		return s
+	}
+	return s[:n] + "..."
+}
+
 // ParseQuestion uses an LLM call to structure the extracted question text.
 // On error or invalid response, returns a minimal structure with the original question.
 func ParseQuestion(ctx context.Context, client *llm.Client, extractedText string) (*ParsedQuestion, error) {
@@ -253,7 +387,7 @@ func ParseQuestion(ctx context.Context, client *llm.Client, extractedText string
 
 	comp, err := client.Complete(ctx, messages)
 	if err != nil {
-		log.Printf("[parser] LLM call failed: %v — using raw text fallback", err)
+		slog.Warn("parser: LLM call failed, using fallback", "error", err)
 		return &ParsedQuestion{
 			Subject:    "",
 			Chapter:    "",
@@ -274,9 +408,13 @@ func ParseQuestion(ctx context.Context, client *llm.Client, extractedText string
 		}
 	}
 
+	// Extract the JSON object and fix invalid escape sequences (e.g. LaTeX \( \) \[ \])
+	raw = extractJSONObject(raw)
+
 	var payload map[string]any
 	if err := json.Unmarshal([]byte(raw), &payload); err != nil {
-		log.Printf("[parser] JSON parse failed: %v — using raw text fallback", err)
+		slog.Warn("parser: JSON parse failed", "error", err, "raw_prefix", truncate(raw, 500))
+		slog.Debug("parser: using raw text fallback")
 		return &ParsedQuestion{
 			Subject:    "",
 			Chapter:    "",
@@ -344,8 +482,10 @@ func ParseQuestion(ctx context.Context, client *llm.Client, extractedText string
 		parsed.Topics = []string{}
 	}
 
-	log.Printf("[parser] subject=%s chapter=%q topics=%v difficulty=%d variables=%d tokens=%d",
-		parsed.Subject, parsed.Chapter, parsed.Topics, parsed.Difficulty, len(parsed.Variables), comp.Usage.TotalTokens)
+	slog.Info("parser result",
+		"subject", parsed.Subject, "chapter", parsed.Chapter,
+		"topics", parsed.Topics, "difficulty", parsed.Difficulty,
+		"variables", len(parsed.Variables), "tokens", comp.Usage.TotalTokens)
 
 	return &parsed, nil
 }

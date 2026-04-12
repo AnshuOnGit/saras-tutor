@@ -4,7 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"log"
+	"log/slog"
 	"strings"
 
 	"saras-tutor/a2a"
@@ -98,7 +98,7 @@ func (a *AttemptEvaluatorAgent) EvaluateWithImage(ctx context.Context, question,
 				},
 			},
 		}
-		log.Printf("[attempt_evaluator] running with vision (handwritten work image)")
+		slog.Info("attempt_evaluator: running with vision")
 	} else {
 		messages = []llm.ChatMessage{
 			{Role: "system", Content: evaluatorSystemPrompt},
@@ -120,12 +120,13 @@ func (a *AttemptEvaluatorAgent) EvaluateWithImage(ctx context.Context, question,
 
 	result, parseErr := parseEvaluatorJSON(comp.Content)
 	if parseErr != nil {
-		log.Printf("[attempt_evaluator] JSON parse warning: %v — using fallback", parseErr)
+		slog.Warn("attempt_evaluator: JSON parse failed, using fallback", "error", parseErr)
 	}
 	result.HintConsumed = hintLevel
 
-	log.Printf("[attempt_evaluator] score=%.2f correct=%v hint=%d model=%s tokens=%d",
-		result.Score, result.Correct, hintLevel, comp.Model, comp.Usage.TotalTokens)
+	slog.Info("attempt_evaluator result",
+		"score", result.Score, "correct", result.Correct,
+		"hint", hintLevel, "model", comp.Model, "tokens", comp.Usage.TotalTokens)
 
 	return result, nil
 }
