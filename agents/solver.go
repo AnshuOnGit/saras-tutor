@@ -81,39 +81,20 @@ func (a *SolverAgent) HandleStream(ctx context.Context, task *a2a.Task, out chan
 	out <- a2a.StreamEvent{Type: "status", State: a2a.TaskStateWorking}
 
 	var textParts []string
-	var imageURL string
 	for _, p := range task.Input.Parts {
 		if p.Type == "text" {
 			textParts = append(textParts, p.Text)
 		}
-		if p.Type == "image" && p.ImageURL != "" {
-			imageURL = p.ImageURL
-		}
 	}
 	question := strings.Join(textParts, "\n")
 
-	// --- Stream the full solution ---
-	var messages []llm.ChatMessage
-	if imageURL != "" {
-		// Vision-enhanced solving: system prompt + text + image
-		messages = []llm.ChatMessage{
-			{Role: "system", Content: solverSystemPrompt},
-			{
-				Role: "user",
-				Content: []llm.ContentPart{
-					{Type: "text", Text: question},
-					{Type: "image_url", ImageURL: &llm.ImageURL{URL: imageURL, Detail: "high"}},
-				},
-			},
-		}
-		slog.Info("solver: streaming with image (vision mode)")
-	} else {
-		messages = []llm.ChatMessage{
-			{Role: "system", Content: solverSystemPrompt},
-			{Role: "user", Content: question},
-		}
-		slog.Info("solver: streaming text-only")
+	// Solver always works from extracted text — images are consumed only
+	// by the image_extraction agent.
+	messages := []llm.ChatMessage{
+		{Role: "system", Content: solverSystemPrompt},
+		{Role: "user", Content: question},
 	}
+	slog.Info("solver: streaming")
 
 	err := a.llmClient.StreamComplete(ctx, messages, func(token string) error {
 		out <- a2a.StreamEvent{

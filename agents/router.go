@@ -499,24 +499,10 @@ func (r *Router) dispatchHint(ctx context.Context, task *a2a.Task, interaction *
 	hintTaskID := uuid.New().String()
 	emitTransition(out, "router", "hint", hintTaskID, fmt.Sprintf("giving hint level %d", level))
 
-	// For hint level 3+, attach the original image if available so the LLM
-	// can reference it directly (no confidence pre-check needed).
-	var imageDataURI string
-	if level >= 3 && interaction.ImageID != "" {
-		imageDataURI = r.loadImageDataURI(ctx, interaction.ImageID)
-	}
-
-	// Build input parts
+	// All hints use extracted text only — images are consumed solely by
+	// the image_extraction agent to avoid redundant vision-model costs.
 	inputParts := []a2a.Part{a2a.TextPart(interaction.QuestionText)}
-	if imageDataURI != "" {
-		inputParts = append(inputParts, a2a.Part{
-			Type:     "image",
-			ImageURL: imageDataURI,
-		})
-		slog.Info("router: hint with image", "level", level)
-	} else {
-		slog.Info("router: hint text-only", "level", level)
-	}
+	slog.Info("router: dispatching hint", "level", level)
 
 	hintTask := &a2a.Task{
 		ID:      hintTaskID,
@@ -596,11 +582,12 @@ func (r *Router) dispatchSolver(ctx context.Context, task *a2a.Task, interaction
 // If modelOverride is non-empty, a temporary SolverAgent is created with that model.
 //
 // Flow:
-//  1. Stream solution (text-only first) — capture full text
-//  2. Verify via VerifierAgent
-//  3. If score < threshold AND image available → re-stream with image
-//  4. Verify again
-//  5. If still low → emit input-needed with model options for user to pick
+//  1. Stream text-only solution — capture full text
+//  2. Verify via VerifierAgent (text-only)
+//  3. If score < threshold → emit input-needed with model options for user to pick
+//
+// Images are consumed only by the image_extraction agent; all downstream
+// agents work exclusively from the extracted text.
 func (r *Router) dispatchSolverWithModel(ctx context.Context, task *a2a.Task, interaction *models.Interaction, modelOverride string, out chan<- a2a.StreamEvent) bool {
 	solver, ok := r.subAgents["solver"]
 	if !ok {
@@ -625,11 +612,8 @@ func (r *Router) dispatchSolverWithModel(ctx context.Context, task *a2a.Task, in
 	emitTransition(out, "router", "solver", solveTaskID,
 		fmt.Sprintf("sending question to solver (model: %s)", modelLabel))
 
-	// Pre-load image for verifier context (even pass 1 benefits from seeing the image)
-	var verifierImageURI string
-	if interaction.ImageID != "" {
-		verifierImageURI = r.loadImageDataURI(ctx, interaction.ImageID)
-	}
+	// All downstream agents (solver, verifier) work with extracted text only.
+	// Images are consumed solely by the image_extraction agent.
 
 	// ── Pass 1: text-only solve ──
 	inputParts := []a2a.Part{a2a.TextPart(interaction.QuestionText)}
@@ -659,7 +643,7 @@ func (r *Router) dispatchSolverWithModel(ctx context.Context, task *a2a.Task, in
 	}
 
 	emitTransition(out, "router", "verifier", solveTaskID, "verifying solution quality")
-	vResult, vComp, vErr := va.Verify(ctx, interaction.QuestionText, fullSolution, verifierImageURI)
+	vResult, vComp, vErr := va.Verify(ctx, interaction.QuestionText, fullSolution, "")
 	if vErr != nil {
 		slog.Warn("router: verifier error, accepting solution", "error", vErr)
 		out <- a2a.StreamEvent{Type: "status", State: a2a.TaskStateCompleted}
@@ -673,65 +657,11 @@ func (r *Router) dispatchSolverWithModel(ctx context.Context, task *a2a.Task, in
 		return true
 	}
 
-	slog.Info("router: verifier pass 1 low", "score", vResult.Score, "threshold", MinVerifierScore)
+	slog.Info("router: verifier pass 1 low, offering model picker", "score", vResult.Score, "threshold", MinVerifierScore)
 
-	// ── Pass 2: retry with image (if available) ──
-	if verifierImageURI == "" {
-		slog.Info("router: no image available, asking user to pick model")
-		r.emitModelPicker(out, vResult, interaction)
-		return false
-	}
-
-	imageDataURI := verifierImageURI
-
-	emitTransition(out, "router", "solver", solveTaskID,
-		fmt.Sprintf("verifier score %.0f%% — retrying with original image", vResult.Score*100))
-
-	// Signal frontend to start a NEW assistant message for pass 2
-	out <- a2a.StreamEvent{Type: "new_turn"}
-	out <- a2a.StreamEvent{
-		Type: "artifact",
-		Message: &a2a.Message{
-			Role:  "agent",
-			Parts: []a2a.Part{a2a.TextPart("⚠️ *Solution quality was low — retrying with image context...*\n\n")},
-		},
-	}
-
-	inputParts2 := []a2a.Part{
-		a2a.TextPart(interaction.QuestionText),
-		{Type: "image", ImageURL: imageDataURI},
-	}
-	solveTask2 := &a2a.Task{
-		ID:        uuid.New().String(),
-		AgentID:   "solver",
-		State:     a2a.TaskStateSubmitted,
-		Input:     a2a.Message{Role: "user", Parts: inputParts2},
-		Metadata:  task.Metadata,
-		CreatedAt: time.Now().UTC(),
-	}
-
-	fullSolution2 := r.streamAndCapture(ctx, solver, solveTask2, out)
-	emitTransition(out, "solver", "router", solveTask2.ID, "solver pass 2 (with image) finished")
-
-	// ── Verify pass 2 (verifier also gets the image) ──
-	emitTransition(out, "router", "verifier", solveTask2.ID, "verifying solution with image")
-	vResult2, vComp2, vErr2 := va.Verify(ctx, interaction.QuestionText, fullSolution2, verifierImageURI)
-	if vErr2 != nil {
-		slog.Warn("router: verifier pass 2 error, accepting solution", "error", vErr2)
-		out <- a2a.StreamEvent{Type: "status", State: a2a.TaskStateCompleted}
-		return true
-	}
-	emitVerifierMetadata(out, vResult2, vComp2, 2)
-
-	if vResult2.Score >= MinVerifierScore {
-		slog.Info("router: verifier pass 2 accepted", "score", vResult2.Score, "threshold", MinVerifierScore)
-		out <- a2a.StreamEvent{Type: "status", State: a2a.TaskStateCompleted}
-		return true
-	}
-
-	// ── Still low → ask user to pick a different model ──
-	slog.Info("router: verifier pass 2 still low, offering model picker", "score", vResult2.Score)
-	r.emitModelPicker(out, vResult2, interaction)
+	// No image retry — images are only used during extraction.
+	// Offer the user a model picker to try a different LLM.
+	r.emitModelPicker(out, vResult, interaction)
 	return false
 }
 

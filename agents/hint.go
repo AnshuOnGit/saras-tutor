@@ -171,13 +171,9 @@ func (a *HintAgent) HandleStream(ctx context.Context, task *a2a.Task, out chan<-
 	level := parseHintLevel(task.Metadata)
 
 	var textParts []string
-	var imageURL string
 	for _, p := range task.Input.Parts {
 		if p.Type == "text" {
 			textParts = append(textParts, p.Text)
-		}
-		if p.Type == "image" && p.ImageURL != "" {
-			imageURL = p.ImageURL
 		}
 	}
 	question := strings.Join(textParts, "\n")
@@ -188,25 +184,12 @@ func (a *HintAgent) HandleStream(ctx context.Context, task *a2a.Task, out chan<-
 		return
 	}
 
-	var messages []llm.ChatMessage
-	if imageURL != "" {
-		// Vision-enhanced hint: send text prompt + image
-		messages = []llm.ChatMessage{
-			{
-				Role: "user",
-				Content: []llm.ContentPart{
-					{Type: "text", Text: fmt.Sprintf(prompt, question)},
-					{Type: "image_url", ImageURL: &llm.ImageURL{URL: imageURL, Detail: "high"}},
-				},
-			},
-		}
-		slog.Info("hint: streaming with image", "level", level)
-	} else {
-		messages = []llm.ChatMessage{
-			{Role: "user", Content: fmt.Sprintf(prompt, question)},
-		}
-		slog.Info("hint: streaming text-only", "level", level)
+	// Hints always work from extracted text — images are consumed only
+	// by the image_extraction agent.
+	messages := []llm.ChatMessage{
+		{Role: "user", Content: fmt.Sprintf(prompt, question)},
 	}
+	slog.Info("hint: streaming", "level", level)
 
 	err := a.llmClient.StreamComplete(ctx, messages, func(token string) error {
 		out <- a2a.StreamEvent{
