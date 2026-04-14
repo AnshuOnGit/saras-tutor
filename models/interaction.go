@@ -131,23 +131,13 @@ type Interaction struct {
 	UpdatedAt      time.Time        `json:"updated_at"`
 }
 
-type ProfileQuestionStat struct {
-	TopicSubtopics  []string `json:"topic_subtopics"`
-	DifficultyLevel int      `json:"difficulty_level"`
-	HintLevel       int      `json:"hint_level"`
-	SelfSolved      *bool    `json:"self_solved,omitempty"`
-}
-
-type ConversationAggrStat struct {
-	ConversationID string                `json:"conversation_id"`
-	Questions      []ProfileQuestionStat `json:"questions"`
-}
-
 // StudentProfile stores long-term learning patterns for a student.
-// This is the "long-term memory" — one aggregate record per conversation.
 type StudentProfile struct {
-	Name           string                 `json:"name"`
-	UserID         string                 `json:"user_id"`
-	TotalQuestions int                    `json:"total_questions"`
-	AggrStats      []ConversationAggrStat `json:"aggr_stats,omitempty"`
+	UserID          string    `json:"user_id"`
+	DisplayName     string    `json:"display_name"`
+	ExamTarget      string    `json:"exam_target"`
+	TotalQuestions  int       `json:"total_questions"`
+	TotalSelfSolved int       `json:"total_self_solved"`
+	CreatedAt       time.Time `json:"created_at"`
+	UpdatedAt       time.Time `json:"updated_at"`
 }

@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log/slog"
 	"strings"
+	"time"
 
 	"saras-tutor/a2a"
 	"saras-tutor/db"
@@ -113,8 +114,14 @@ func (a *AttemptEvaluatorAgent) EvaluateWithImage(ctx context.Context, question,
 		client = a.llmClient
 	}
 
+	llmStart := time.Now()
 	comp, err := client.Complete(ctx, messages)
+	llmDuration := time.Since(llmStart)
 	if err != nil {
+		slog.Error("attempt_evaluator: LLM call failed",
+			"model", client.Model,
+			"error", err,
+			"elapsed_ms", llmDuration.Milliseconds())
 		return nil, fmt.Errorf("evaluator LLM call failed: %w", err)
 	}
 
@@ -124,9 +131,16 @@ func (a *AttemptEvaluatorAgent) EvaluateWithImage(ctx context.Context, question,
 	}
 	result.HintConsumed = hintLevel
 
-	slog.Info("attempt_evaluator result",
-		"score", result.Score, "correct", result.Correct,
-		"hint", hintLevel, "model", comp.Model, "tokens", comp.Usage.TotalTokens)
+	slog.Info("attempt_evaluator: result",
+		"score", result.Score,
+		"correct", result.Correct,
+		"hint", hintLevel,
+		"model", comp.Model,
+		"prompt_tokens", comp.Usage.PromptTokens,
+		"completion_tokens", comp.Usage.CompletionTokens,
+		"total_tokens", comp.Usage.TotalTokens,
+		"elapsed_ms", llmDuration.Milliseconds(),
+		"elapsed_s", fmt.Sprintf("%.1f", llmDuration.Seconds()))
 
 	return result, nil
 }

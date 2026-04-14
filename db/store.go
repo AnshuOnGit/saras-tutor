@@ -277,23 +277,19 @@ func (s *Store) CloseAllActive(ctx context.Context, conversationID string, reaso
 // GetOrCreateProfile returns the student profile, creating one if it doesn't exist.
 func (s *Store) GetOrCreateProfile(ctx context.Context, userID string) (*models.StudentProfile, error) {
 	row := s.pool.QueryRow(ctx,
-		`SELECT name, user_id, total_questions, aggr_stats
+		`SELECT user_id, display_name, exam_target, total_questions, total_self_solved, created_at, updated_at
 		 FROM student_profiles WHERE user_id = $1`, userID,
 	)
 	var p models.StudentProfile
-	var aggrStatsRaw []byte
-	if err := row.Scan(&p.Name, &p.UserID, &p.TotalQuestions, &aggrStatsRaw); err != nil {
+	if err := row.Scan(&p.UserID, &p.DisplayName, &p.ExamTarget, &p.TotalQuestions, &p.TotalSelfSolved, &p.CreatedAt, &p.UpdatedAt); err != nil {
 		if err == pgx.ErrNoRows {
-			// Create a new profile
 			p = models.StudentProfile{
-				Name:           fmt.Sprintf("prof_%s", userID),
-				UserID:         userID,
-				TotalQuestions: 0,
-				AggrStats:      []models.ConversationAggrStat{},
+				UserID:     userID,
+				ExamTarget: "BOTH",
 			}
 			_, err2 := s.pool.Exec(ctx,
-				`INSERT INTO student_profiles (name, user_id, total_questions, aggr_stats) VALUES ($1, $2, $3, $4::jsonb)`,
-				p.Name, p.UserID, p.TotalQuestions, `[]`,
+				`INSERT INTO student_profiles (user_id) VALUES ($1)`,
+				p.UserID,
 			)
 			if err2 != nil {
 				return nil, fmt.Errorf("create profile: %w", err2)
@@ -301,9 +297,6 @@ func (s *Store) GetOrCreateProfile(ctx context.Context, userID string) (*models.
 			return &p, nil
 		}
 		return nil, fmt.Errorf("get profile: %w", err)
-	}
-	if err := json.Unmarshal(aggrStatsRaw, &p.AggrStats); err != nil || p.AggrStats == nil {
-		p.AggrStats = []models.ConversationAggrStat{}
 	}
 	return &p, nil
 }
@@ -315,113 +308,6 @@ func (s *Store) IncrementProfileQuestions(ctx context.Context, userID string) er
 		userID,
 	)
 	return err
-}
-
-// AppendProfileQuestionStat appends one question under the conversation entry in aggr_stats.
-func (s *Store) AppendProfileQuestionStat(ctx context.Context, userID, conversationID, chapter string, topics []string, difficulty int) error {
-	topicSubtopics := make([]string, 0, len(topics))
-	for _, topic := range topics {
-		if topic == "" {
-			continue
-		}
-		topicSubtopics = append(topicSubtopics, chapter+":"+topic)
-	}
-	if len(topicSubtopics) == 0 && chapter != "" {
-		topicSubtopics = append(topicSubtopics, chapter+":")
-	}
-
-	entry := models.ProfileQuestionStat{
-		TopicSubtopics:  topicSubtopics,
-		DifficultyLevel: difficulty,
-		HintLevel:       0,
-		SelfSolved:      nil,
-	}
-
-	p, err := s.GetOrCreateProfile(ctx, userID)
-	if err != nil {
-		return fmt.Errorf("get profile for aggr_stats append: %w", err)
-	}
-
-	conversationFound := false
-	for i := range p.AggrStats {
-		if p.AggrStats[i].ConversationID == conversationID {
-			p.AggrStats[i].Questions = append(p.AggrStats[i].Questions, entry)
-			conversationFound = true
-			break
-		}
-	}
-	if !conversationFound {
-		p.AggrStats = append(p.AggrStats, models.ConversationAggrStat{
-			ConversationID: conversationID,
-			Questions:      []models.ProfileQuestionStat{entry},
-		})
-	}
-
-	aggrJSON, err := json.Marshal(p.AggrStats)
-	if err != nil {
-		return fmt.Errorf("marshal aggr_stats: %w", err)
-	}
-
-	_, err = s.pool.Exec(ctx,
-		`UPDATE student_profiles
-		 SET total_questions = total_questions + 1,
-		     aggr_stats = $1::jsonb
-		 WHERE user_id = $2`,
-		string(aggrJSON), userID,
-	)
-	if err != nil {
-		return fmt.Errorf("append aggr_stats entry: %w", err)
-	}
-	return nil
-}
-
-// UpdateProfileQuestionOutcome updates the latest unresolved question in a conversation.
-func (s *Store) UpdateProfileQuestionOutcome(ctx context.Context, userID, conversationID string, hintsUsed int, selfSolved bool) error {
-	p, err := s.GetOrCreateProfile(ctx, userID)
-	if err != nil {
-		return fmt.Errorf("get profile for aggr_stats outcome: %w", err)
-	}
-
-	conversationIdx := -1
-	for i := range p.AggrStats {
-		if p.AggrStats[i].ConversationID == conversationID {
-			conversationIdx = i
-			break
-		}
-	}
-	if conversationIdx == -1 || len(p.AggrStats[conversationIdx].Questions) == 0 {
-		return nil
-	}
-
-	questionIdx := -1
-	for i := len(p.AggrStats[conversationIdx].Questions) - 1; i >= 0; i-- {
-		if p.AggrStats[conversationIdx].Questions[i].SelfSolved == nil {
-			questionIdx = i
-			break
-		}
-	}
-	if questionIdx == -1 {
-		questionIdx = len(p.AggrStats[conversationIdx].Questions) - 1
-	}
-
-	p.AggrStats[conversationIdx].Questions[questionIdx].HintLevel = hintsUsed
-	p.AggrStats[conversationIdx].Questions[questionIdx].SelfSolved = &selfSolved
-
-	aggrJSON, err := json.Marshal(p.AggrStats)
-	if err != nil {
-		return fmt.Errorf("marshal aggr_stats outcome: %w", err)
-	}
-
-	_, err = s.pool.Exec(ctx,
-		`UPDATE student_profiles
-		 SET aggr_stats = $1::jsonb
-		 WHERE user_id = $2`,
-		string(aggrJSON), userID,
-	)
-	if err != nil {
-		return fmt.Errorf("update aggr_stats outcome: %w", err)
-	}
-	return nil
 }
 
 // ── Student Attempts ──

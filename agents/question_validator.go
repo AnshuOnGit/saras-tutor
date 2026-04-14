@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log/slog"
 	"strings"
+	"time"
 
 	"saras-tutor/llm"
 )
@@ -44,9 +45,14 @@ func ValidateQuestion(ctx context.Context, client *llm.Client, question string) 
 		{Role: "user", Content: question},
 	}
 
+	llmStart := time.Now()
 	comp, err := client.Complete(ctx, messages)
+	llmDuration := time.Since(llmStart)
 	if err != nil {
-		slog.Warn("validator: LLM call failed, allowing as fallback", "error", err)
+		slog.Warn("validator: LLM call failed, allowing as fallback",
+			"model", client.Model,
+			"error", err,
+			"elapsed_ms", llmDuration.Milliseconds())
 		return &ValidationResult{Valid: true, Reason: "validation skipped (LLM error)"}, nil
 	}
 
@@ -66,7 +72,16 @@ func ValidateQuestion(ctx context.Context, client *llm.Client, question string) 
 		return &ValidationResult{Valid: true, Reason: "validation skipped (parse error)"}, nil
 	}
 
-	slog.Info("validator result", "valid", result.Valid, "subject", result.Subject, "reason", result.Reason, "tokens", comp.Usage.TotalTokens)
+	slog.Info("validator: result",
+		"valid", result.Valid,
+		"subject", result.Subject,
+		"reason", result.Reason,
+		"model", comp.Model,
+		"prompt_tokens", comp.Usage.PromptTokens,
+		"completion_tokens", comp.Usage.CompletionTokens,
+		"total_tokens", comp.Usage.TotalTokens,
+		"elapsed_ms", llmDuration.Milliseconds(),
+		"elapsed_s", fmt.Sprintf("%.1f", llmDuration.Seconds()))
 	return &result, nil
 }
 

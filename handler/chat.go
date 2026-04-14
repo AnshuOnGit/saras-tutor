@@ -72,19 +72,21 @@ type ChatHandler struct {
 func NewChatHandler(cfg *config.Config, pool *pgxpool.Pool) *ChatHandler {
 	store := db.NewStore(pool)
 
-	// Build LLM clients — three tiers:
+	// Build LLM clients — four tiers from the model registry:
 	//   visionLLM  → image extraction (heavy VLM)
-	//   solverLLM  → solver + hint agents (math-strong model)
+	//   solverLLM  → solution agents (Solver:Level2)
+	//   hintLLM    → hint generation (HintGenerator)
 	//   routerLLM  → validator, parser, verifier, evaluator (fast/cheap)
-	visionLLM := llm.NewClient(cfg.LLMAPIKey, cfg.VisionModel, cfg.LLMBaseURL, cfg.LLMUserID)
-	solverLLM := llm.NewClient(cfg.LLMAPIKey, cfg.SolverModel, cfg.LLMBaseURL, cfg.LLMUserID)
-	routerLLM := llm.NewClient(cfg.LLMAPIKey, cfg.RouterModel, cfg.LLMBaseURL, cfg.LLMUserID)
+	visionLLM := llm.NewClient(cfg.LLMAPIKey, config.DefaultVisionModel(), cfg.LLMBaseURL, cfg.LLMUserID)
+	solverLLM := llm.NewClient(cfg.LLMAPIKey, config.DefaultSolverModel(), cfg.LLMBaseURL, cfg.LLMUserID)
+	hintLLM := llm.NewClient(cfg.LLMAPIKey, config.DefaultHintModel(), cfg.LLMBaseURL, cfg.LLMUserID)
+	routerLLM := llm.NewClient(cfg.LLMAPIKey, config.DefaultRouterModel(), cfg.LLMBaseURL, cfg.LLMUserID)
 
 	// Create sub-agents
 	imgAgent := agents.NewImageExtractionAgent(visionLLM, store)
 	solverAgent := agents.NewSolverAgent(solverLLM, store)
 	verifierAgent := agents.NewVerifierAgent(routerLLM, store)
-	hintAgent := agents.NewHintAgent(solverLLM, store)
+	hintAgent := agents.NewHintAgent(hintLLM, store)
 	evaluatorAgent := agents.NewAttemptEvaluatorAgent(routerLLM, visionLLM, store)
 
 	subAgents := map[string]a2a.Agent{

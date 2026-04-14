@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"log/slog"
 	"strings"
+	"time"
 
 	"saras-tutor/a2a"
 	"saras-tutor/db"
@@ -74,16 +75,34 @@ func (a *SolverAgent) Handle(ctx context.Context, task *a2a.Task) (*a2a.Task, er
 		{Role: "user", Content: strings.Join(parts, "\n")},
 	}
 
+	llmStart := time.Now()
 	raw, err := a.llmClient.Complete(ctx, messages)
+	llmDuration := time.Since(llmStart)
 	if err != nil {
+		slog.Error("solver: LLM call failed",
+			"model", a.llmClient.Model,
+			"error", err,
+			"elapsed_ms", llmDuration.Milliseconds())
 		task.State = a2a.TaskStateFailed
 		return task, fmt.Errorf("solver: %w", err)
 	}
 
+	slog.Info("solver: complete",
+		"model", raw.Model,
+		"prompt_tokens", raw.Usage.PromptTokens,
+		"completion_tokens", raw.Usage.CompletionTokens,
+		"total_tokens", raw.Usage.TotalTokens,
+		"response_len", len(raw.Content),
+		"elapsed_ms", llmDuration.Milliseconds(),
+		"elapsed_s", fmt.Sprintf("%.1f", llmDuration.Seconds()))
+
+	// Strip <think>...</think> blocks from reasoning models (safety net)
+	cleaned := stripThinkBlocks(raw.Content)
+
 	task.State = a2a.TaskStateCompleted
 	task.Output = &a2a.Message{
 		Role:  "agent",
-		Parts: []a2a.Part{a2a.TextPart(strings.TrimSpace(raw.Content))},
+		Parts: []a2a.Part{a2a.TextPart(cleaned)},
 	}
 	return task, nil
 }
@@ -108,20 +127,43 @@ func (a *SolverAgent) HandleStream(ctx context.Context, task *a2a.Task, out chan
 		{Role: "system", Content: solverSystemPrompt},
 		{Role: "user", Content: question},
 	}
-	slog.Info("solver: streaming")
+	slog.Info("solver: streaming", "model", a.llmClient.Model)
 
-	err := a.llmClient.StreamComplete(ctx, messages, func(token string) error {
+	// Strip <think>...</think> blocks from reasoning models (DeepSeek-R1).
+	// Uses a two-phase filter: buffer during think phase, stream after.
+	tf := newThinkFilter(func(text string) {
 		out <- a2a.StreamEvent{
 			Type: "artifact",
 			Message: &a2a.Message{
 				Role:  "agent",
-				Parts: []a2a.Part{a2a.TextPart(token)},
+				Parts: []a2a.Part{a2a.TextPart(text)},
 			},
 		}
-		return nil
 	})
 
+	streamStart := time.Now()
+	result, err := a.llmClient.StreamComplete(ctx, messages, func(token string) error {
+		tf.Write(token)
+		return nil
+	})
+	tf.Flush()
+	streamDuration := time.Since(streamStart)
+
 	if err != nil {
+		slog.Error("solver: stream failed",
+			"model", a.llmClient.Model,
+			"error", err,
+			"elapsed_ms", streamDuration.Milliseconds())
 		out <- a2a.StreamEvent{Type: "error", Error: err.Error()}
+		return
+	}
+	if result != nil {
+		slog.Info("solver: stream done",
+			"model", a.llmClient.Model,
+			"prompt_tokens", result.Usage.PromptTokens,
+			"completion_tokens", result.Usage.CompletionTokens,
+			"total_tokens", result.Usage.TotalTokens,
+			"elapsed_ms", streamDuration.Milliseconds(),
+			"elapsed_s", fmt.Sprintf("%.1f", streamDuration.Seconds()))
 	}
 }

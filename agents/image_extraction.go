@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log/slog"
 	"strings"
+	"time"
 
 	"saras-tutor/a2a"
 	"saras-tutor/db"
@@ -141,28 +142,54 @@ func fixLaTeXInMarkdown(s string) string {
 
 // Handle processes an image extraction task synchronously.
 func (a *ImageExtractionAgent) Handle(ctx context.Context, task *a2a.Task) (*a2a.Task, error) {
+	handleStart := time.Now()
+	slog.Info("image_extraction: Handle started", "task", task.ID)
+
 	// Build multi-modal message with image parts
 	var contentParts []llm.ContentPart
 	contentParts = append(contentParts, llm.ContentPart{Type: "text", Text: imageExtractionPrompt})
 
+	imageCount := 0
+	var imageSizeHint int
 	for _, p := range task.Input.Parts {
 		if p.Type == "image" && p.ImageURL != "" {
 			contentParts = append(contentParts, llm.ContentPart{
 				Type:     "image_url",
 				ImageURL: &llm.ImageURL{URL: p.ImageURL, Detail: "high"},
 			})
+			imageCount++
+			imageSizeHint += len(p.ImageURL)
 		}
 	}
+	slog.Info("image_extraction: built request",
+		"images", imageCount,
+		"image_data_chars", imageSizeHint,
+		"prompt_len", len(imageExtractionPrompt),
+		"elapsed_ms", time.Since(handleStart).Milliseconds())
 
 	messages := []llm.ChatMessage{
 		{Role: "user", Content: contentParts},
 	}
 
+	slog.Info("image_extraction: calling vision LLM...", "model", a.llmClient.Model)
+	llmStart := time.Now()
 	raw, err := a.llmClient.Complete(ctx, messages)
+	llmDuration := time.Since(llmStart)
 	if err != nil {
+		slog.Error("image_extraction: LLM call failed",
+			"error", err,
+			"elapsed_ms", llmDuration.Milliseconds())
 		task.State = a2a.TaskStateFailed
 		return task, fmt.Errorf("image extraction: %w", err)
 	}
+	slog.Info("image_extraction: LLM responded",
+		"model", raw.Model,
+		"elapsed_ms", llmDuration.Milliseconds(),
+		"elapsed_s", fmt.Sprintf("%.1f", llmDuration.Seconds()),
+		"prompt_tokens", raw.Usage.PromptTokens,
+		"completion_tokens", raw.Usage.CompletionTokens,
+		"total_tokens", raw.Usage.TotalTokens,
+		"response_len", len(raw.Content))
 
 	// Strip code fences if present
 	extracted := raw.Content
@@ -181,9 +208,13 @@ func (a *ImageExtractionAgent) Handle(ctx context.Context, task *a2a.Task) (*a2a
 	extracted = extractJSONObject(extracted)
 
 	// Parse structured JSON
+	parseStart := time.Now()
 	var resp extractionResponse
 	if err := json.Unmarshal([]byte(extracted), &resp); err != nil {
-		slog.Warn("image_extraction: JSON parse failed, using raw text", "error", err)
+		slog.Warn("image_extraction: JSON parse failed, using raw text",
+			"error", err,
+			"raw_prefix", truncate(extracted, 200),
+			"total_elapsed_ms", time.Since(handleStart).Milliseconds())
 		// Fallback: use raw text directly
 		task.State = a2a.TaskStateCompleted
 		task.Output = &a2a.Message{
@@ -193,8 +224,10 @@ func (a *ImageExtractionAgent) Handle(ctx context.Context, task *a2a.Task) (*a2a
 		return task, nil
 	}
 
-	slog.Info("image_extraction result",
-		"confidence", resp.Confidence, "content_len", len(resp.Content))
+	slog.Info("image_extraction: parsed JSON",
+		"confidence", resp.Confidence,
+		"content_len", len(resp.Content),
+		"parse_ms", time.Since(parseStart).Milliseconds())
 
 	// Repair any LaTeX commands whose backslash was interpreted as a
 	// JSON control character (e.g. form-feed from \frac, tab from \theta).
@@ -217,6 +250,12 @@ func (a *ImageExtractionAgent) Handle(ctx context.Context, task *a2a.Task) (*a2a
 	if markdown == "" {
 		markdown = "(No content extracted from image)"
 	}
+
+	slog.Info("image_extraction: complete",
+		"confidence", resp.Confidence,
+		"content_len", len(markdown),
+		"total_elapsed_ms", time.Since(handleStart).Milliseconds(),
+		"total_elapsed_s", fmt.Sprintf("%.1f", time.Since(handleStart).Seconds()))
 
 	task.State = a2a.TaskStateCompleted
 	task.Output = &a2a.Message{

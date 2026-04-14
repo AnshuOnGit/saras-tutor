@@ -98,10 +98,14 @@ CREATE INDEX IF NOT EXISTS idx_interactions_conv_state
 -- ── Student profiles: long-term memory across sessions ──
 
 CREATE TABLE IF NOT EXISTS student_profiles (
-    user_id         TEXT PRIMARY KEY,
-    name            TEXT NOT NULL,
-    total_questions INT  NOT NULL DEFAULT 0,
-    aggr_stats      JSONB NOT NULL DEFAULT '[]'::jsonb
+    user_id           TEXT PRIMARY KEY,
+    display_name      TEXT NOT NULL DEFAULT '',
+    exam_target       TEXT NOT NULL DEFAULT 'BOTH'
+                      CHECK (exam_target IN ('JEE','NEET','BOTH')),
+    total_questions   INT  NOT NULL DEFAULT 0,
+    total_self_solved INT  NOT NULL DEFAULT 0,
+    created_at        TIMESTAMPTZ NOT NULL DEFAULT now(),
+    updated_at        TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 
 CREATE INDEX IF NOT EXISTS idx_student_profiles_user

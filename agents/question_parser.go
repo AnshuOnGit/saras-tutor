@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"strconv"
 	"strings"
+	"time"
 
 	"saras-tutor/db"
 	"saras-tutor/llm"
@@ -385,9 +386,14 @@ func ParseQuestion(ctx context.Context, client *llm.Client, extractedText string
 		{Role: "user", Content: extractedText},
 	}
 
+	llmStart := time.Now()
 	comp, err := client.Complete(ctx, messages)
+	llmDuration := time.Since(llmStart)
 	if err != nil {
-		slog.Warn("parser: LLM call failed, using fallback", "error", err)
+		slog.Warn("parser: LLM call failed, using fallback",
+			"model", client.Model,
+			"error", err,
+			"elapsed_ms", llmDuration.Milliseconds())
 		return &ParsedQuestion{
 			Subject:    "",
 			Chapter:    "",
@@ -397,6 +403,15 @@ func ParseQuestion(ctx context.Context, client *llm.Client, extractedText string
 			Variables:  map[string]string{},
 		}, nil
 	}
+
+	slog.Info("parser: LLM responded",
+		"model", comp.Model,
+		"prompt_tokens", comp.Usage.PromptTokens,
+		"completion_tokens", comp.Usage.CompletionTokens,
+		"total_tokens", comp.Usage.TotalTokens,
+		"response_len", len(comp.Content),
+		"elapsed_ms", llmDuration.Milliseconds(),
+		"elapsed_s", fmt.Sprintf("%.1f", llmDuration.Seconds()))
 
 	raw := strings.TrimSpace(comp.Content)
 	// Strip code fences if present

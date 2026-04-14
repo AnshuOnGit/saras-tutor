@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log/slog"
 	"strings"
+	"time"
 
 	"saras-tutor/a2a"
 	"saras-tutor/db"
@@ -93,8 +94,14 @@ func (a *VerifierAgent) Verify(ctx context.Context, question, solution, imageDat
 		}
 	}
 
+	llmStart := time.Now()
 	comp, err := a.llmClient.Complete(ctx, messages)
+	llmDuration := time.Since(llmStart)
 	if err != nil {
+		slog.Error("verifier: LLM call failed",
+			"model", a.llmClient.Model,
+			"error", err,
+			"elapsed_ms", llmDuration.Milliseconds())
 		return nil, nil, fmt.Errorf("verifier LLM call failed: %w", err)
 	}
 
@@ -103,7 +110,15 @@ func (a *VerifierAgent) Verify(ctx context.Context, question, solution, imageDat
 		slog.Warn("verifier: JSON parse failed, using fallback", "error", parseErr)
 	}
 
-	slog.Info("verifier result", "score", result.Score, "issues", result.Issues, "model", comp.Model, "tokens", comp.Usage.TotalTokens)
+	slog.Info("verifier: result",
+		"score", result.Score,
+		"issues", result.Issues,
+		"model", comp.Model,
+		"prompt_tokens", comp.Usage.PromptTokens,
+		"completion_tokens", comp.Usage.CompletionTokens,
+		"total_tokens", comp.Usage.TotalTokens,
+		"elapsed_ms", llmDuration.Milliseconds(),
+		"elapsed_s", fmt.Sprintf("%.1f", llmDuration.Seconds()))
 
 	return result, comp, nil
 }

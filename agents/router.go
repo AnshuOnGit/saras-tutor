@@ -32,21 +32,19 @@ import (
 
 // Router replaces the old LLM-based supervisor. It implements a2a.Agent.
 type Router struct {
-	store       *db.Store
-	cfg         *config.Config
-	llmClient   *llm.Client // lightweight client for utility calls (validation, etc.)
-	subAgents   map[string]a2a.Agent
-	retryModels []string // alternative models for user to pick
+	store     *db.Store
+	cfg       *config.Config
+	llmClient *llm.Client // lightweight client for utility calls (validation, etc.)
+	subAgents map[string]a2a.Agent
 }
 
 // NewRouter creates the deterministic router.
 func NewRouter(store *db.Store, cfg *config.Config, llmClient *llm.Client, subAgents map[string]a2a.Agent) *Router {
 	return &Router{
-		store:       store,
-		cfg:         cfg,
-		llmClient:   llmClient,
-		subAgents:   subAgents,
-		retryModels: cfg.RetryModels,
+		store:     store,
+		cfg:       cfg,
+		llmClient: llmClient,
+		subAgents: subAgents,
 	}
 }
 
@@ -146,7 +144,16 @@ func (r *Router) handleNewQuestion(ctx context.Context, task *a2a.Task, convID, 
 			Type: "artifact",
 			Message: &a2a.Message{
 				Role:  "agent",
-				Parts: []a2a.Part{a2a.TextPart("**Extracted from image:**\n\n" + questionText)},
+				Parts: []a2a.Part{a2a.TextPart(fmt.Sprintf("📄 **Extracted from image** _(model: %s)_:\n\n%s", config.DefaultVisionModel(), questionText))},
+			},
+		}
+
+		// Clear visual separator between extraction and analysis phases
+		out <- a2a.StreamEvent{
+			Type: "artifact",
+			Message: &a2a.Message{
+				Role:  "agent",
+				Parts: []a2a.Part{a2a.TextPart("\n---\n\n")},
 			},
 		}
 	}
@@ -157,7 +164,17 @@ func (r *Router) handleNewQuestion(ctx context.Context, task *a2a.Task, convID, 
 	}
 
 	// 3. Validate the question is about an allowed subject (math/physics/chemistry/biology)
+	routerModel := config.DefaultRouterModel()
+	out <- a2a.StreamEvent{
+		Type: "artifact",
+		Message: &a2a.Message{
+			Role:  "agent",
+			Parts: []a2a.Part{a2a.TextPart(fmt.Sprintf("⏳ **Validating & analysing question…** _(model: %s | purpose: validation + parsing)_\n\n", routerModel))},
+		},
+	}
+	validateStart := time.Now()
 	vr, _ := ValidateQuestion(ctx, r.llmClient, questionText)
+	slog.Info("router: validation done", "elapsed_ms", time.Since(validateStart).Milliseconds())
 	if vr != nil && !vr.Valid {
 		slog.Info("router: question rejected", "reason", vr.Reason)
 		out <- a2a.StreamEvent{
@@ -172,7 +189,9 @@ func (r *Router) handleNewQuestion(ctx context.Context, task *a2a.Task, convID, 
 	}
 
 	// 4. Parse the question into structured format (topics, difficulty, variables)
+	parseStart := time.Now()
 	parsedQ, _ := ParseQuestion(ctx, r.llmClient, questionText)
+	slog.Info("router: parsing done", "elapsed_ms", time.Since(parseStart).Milliseconds())
 	var subjectName, chapterName string
 	var topicNames []string
 	difficulty := 0
@@ -221,12 +240,19 @@ func (r *Router) handleNewQuestion(ctx context.Context, task *a2a.Task, convID, 
 		if _, err := r.store.GetOrCreateProfile(ctx, userID); err != nil {
 			slog.Warn("router: get/create profile", "error", err)
 		}
-		if err := r.store.AppendProfileQuestionStat(ctx, userID, convID, chapterName, topicNames, difficulty); err != nil {
-			slog.Warn("router: append aggr_stats", "error", err)
+		if err := r.store.IncrementProfileQuestions(ctx, userID); err != nil {
+			slog.Warn("router: increment questions", "error", err)
 		}
 	}
 
-	// 8. Dispatch Hint Level 1
+	// 8. Dispatch Hint Level 1 — with clear visual separator
+	out <- a2a.StreamEvent{
+		Type: "artifact",
+		Message: &a2a.Message{
+			Role:  "agent",
+			Parts: []a2a.Part{a2a.TextPart(fmt.Sprintf("💡 **Generating hint…** _(model: %s | purpose: hint generation)_\n\n", config.DefaultHintModel()))},
+		},
+	}
 	r.dispatchHint(ctx, task, interaction, 1, out)
 }
 
@@ -258,8 +284,10 @@ func (r *Router) handleShowSolution(ctx context.Context, task *a2a.Task, convID,
 		return
 	}
 
-	slog.Info("router: dispatching solver", "interaction", interaction.ID)
-	emitTransition(out, "router", "solver", task.ID, "student requested full solution")
+	solverModel := config.DefaultSolverModel()
+	slog.Info("router: dispatching solver", "interaction", interaction.ID, "model", solverModel)
+	emitTransition(out, "router", "solver", task.ID,
+		fmt.Sprintf("full solution requested | model: %s | purpose: solver", solverModel))
 
 	// Dispatch solver with the original question (+ image if verifier low)
 	completed := r.dispatchSolver(ctx, task, interaction, out)
@@ -270,12 +298,6 @@ func (r *Router) handleShowSolution(ctx context.Context, task *a2a.Task, convID,
 			slog.Warn("router: close interaction", "error", err)
 		}
 
-		// Update long-term memory
-		if userID != "" {
-			if err := r.store.UpdateProfileQuestionOutcome(ctx, userID, convID, interaction.HintLevel, false); err != nil {
-				slog.Warn("router: record outcome", "error", err)
-			}
-		}
 	} else {
 		slog.Info("router: solver awaiting model picker", "interaction", interaction.ID)
 	}
@@ -300,13 +322,6 @@ func (r *Router) handleClose(ctx context.Context, task *a2a.Task, convID, userID
 
 	if err := r.store.CloseInteraction(ctx, interaction.ID, models.InteractionClosed, exitReason); err != nil {
 		slog.Warn("router: close interaction", "error", err)
-	}
-
-	// Update long-term memory
-	if userID != "" {
-		if err := r.store.UpdateProfileQuestionOutcome(ctx, userID, convID, interaction.HintLevel, true); err != nil {
-			slog.Warn("router: record outcome", "error", err)
-		}
 	}
 
 	slog.Info("router: interaction closed", "id", interaction.ID, "exit", exitReason, "hints", interaction.HintLevel)
@@ -369,8 +384,9 @@ func (r *Router) handleSubmitAttempt(ctx context.Context, task *a2a.Task, convID
 		return
 	}
 
+	evalModel := config.DefaultRouterModel()
 	emitTransition(out, "router", "attempt_evaluator", task.ID,
-		fmt.Sprintf("evaluating student attempt at hint level %d", hintLevel))
+		fmt.Sprintf("evaluating student attempt at hint level %d | model: %s | purpose: attempt evaluation", hintLevel, evalModel))
 
 	result, evalErr := evalAgent.Evaluate(ctx, interaction.QuestionText, studentText, hintLevel)
 	if evalErr != nil {
@@ -379,7 +395,8 @@ func (r *Router) handleSubmitAttempt(ctx context.Context, task *a2a.Task, convID
 		return
 	}
 
-	emitTransition(out, "attempt_evaluator", "router", task.ID, fmt.Sprintf("evaluation complete — score %.0f%%", result.Score*100))
+	emitTransition(out, "attempt_evaluator", "router", task.ID,
+		fmt.Sprintf("evaluation complete — score %.0f%% | model: %s", result.Score*100, evalModel))
 
 	// Persist the attempt — for image-only, record a placeholder in student_message
 	attemptMessage := studentText
@@ -455,11 +472,6 @@ func (r *Router) handleSubmitAttempt(ctx context.Context, task *a2a.Task, convID
 		if err := r.store.CloseInteraction(ctx, interaction.ID, models.InteractionClosed, exitReason); err != nil {
 			slog.Warn("router: close interaction after correct attempt", "error", err)
 		}
-		if userID != "" {
-			if err := r.store.UpdateProfileQuestionOutcome(ctx, userID, convID, interaction.HintLevel, true); err != nil {
-				slog.Warn("router: record outcome", "error", err)
-			}
-		}
 		out <- a2a.StreamEvent{
 			Type: "artifact",
 			Message: &a2a.Message{
@@ -489,6 +501,7 @@ func (r *Router) handleSubmitAttempt(ctx context.Context, task *a2a.Task, convID
 // ── Dispatchers ──────────────────────────────────────────────────────
 
 func (r *Router) dispatchHint(ctx context.Context, task *a2a.Task, interaction *models.Interaction, level int, out chan<- a2a.StreamEvent) {
+	hintStart := time.Now()
 	hintAgent, ok := r.subAgents["hint"]
 	if !ok {
 		out <- a2a.StreamEvent{Type: "error", Error: "hint agent not registered"}
@@ -496,12 +509,14 @@ func (r *Router) dispatchHint(ctx context.Context, task *a2a.Task, interaction *
 	}
 
 	hintTaskID := uuid.New().String()
-	emitTransition(out, "router", "hint", hintTaskID, fmt.Sprintf("giving hint level %d", level))
+	hintModel := config.DefaultHintModel()
+	emitTransition(out, "router", "hint", hintTaskID,
+		fmt.Sprintf("hint level %d | model: %s | purpose: hint generation", level, hintModel))
 
 	// All hints use extracted text only — images are consumed solely by
 	// the image_extraction agent to avoid redundant vision-model costs.
 	inputParts := []a2a.Part{a2a.TextPart(interaction.QuestionText)}
-	slog.Info("router: dispatching hint", "level", level)
+	slog.Info("router: dispatching hint", "level", level, "model", hintModel)
 
 	hintTask := &a2a.Task{
 		ID:      hintTaskID,
@@ -519,7 +534,13 @@ func (r *Router) dispatchHint(ctx context.Context, task *a2a.Task, interaction *
 
 	// Stream hint to client
 	hintAgent.HandleStream(ctx, hintTask, out)
-	emitTransition(out, "hint", "router", hintTaskID, fmt.Sprintf("hint level %d delivered", level))
+	hintDuration := time.Since(hintStart)
+	emitTransition(out, "hint", "router", hintTaskID,
+		fmt.Sprintf("hint level %d generated (%.1fs) | model: %s", level, hintDuration.Seconds(), config.DefaultHintModel()))
+	slog.Info("router: hint streamed",
+		"level", level,
+		"elapsed_ms", hintDuration.Milliseconds(),
+		"elapsed_s", fmt.Sprintf("%.1f", hintDuration.Seconds()))
 
 	// First set the hint state, then move to waiting_for_attempt
 	var hintState models.InteractionState
@@ -604,12 +625,12 @@ func (r *Router) dispatchSolverWithModel(ctx context.Context, task *a2a.Task, in
 	verifier, hasVerifier := r.subAgents["verifier"]
 
 	solveTaskID := uuid.New().String()
-	modelLabel := r.cfg.SolverModel
+	modelLabel := config.DefaultSolverModel()
 	if modelOverride != "" {
 		modelLabel = modelOverride
 	}
 	emitTransition(out, "router", "solver", solveTaskID,
-		fmt.Sprintf("sending question to solver (model: %s)", modelLabel))
+		fmt.Sprintf("solving question | model: %s | purpose: step-by-step solution", modelLabel))
 
 	// All downstream agents (solver, verifier) work with extracted text only.
 	// Images are consumed solely by the image_extraction agent.
@@ -626,7 +647,8 @@ func (r *Router) dispatchSolverWithModel(ctx context.Context, task *a2a.Task, in
 	}
 
 	fullSolution := r.streamAndCapture(ctx, solver, solveTask, out)
-	emitTransition(out, "solver", "router", solveTaskID, "solver pass 1 finished")
+	emitTransition(out, "solver", "router", solveTaskID,
+		fmt.Sprintf("solver pass 1 finished | model: %s", modelLabel))
 
 	// ── Verify pass 1 ──
 	if !hasVerifier {
@@ -641,7 +663,9 @@ func (r *Router) dispatchSolverWithModel(ctx context.Context, task *a2a.Task, in
 		return true
 	}
 
-	emitTransition(out, "router", "verifier", solveTaskID, "verifying solution quality")
+	verifierModel := config.DefaultRouterModel()
+	emitTransition(out, "router", "verifier", solveTaskID,
+		fmt.Sprintf("verifying solution quality | model: %s | purpose: verification", verifierModel))
 	vResult, vComp, vErr := va.Verify(ctx, interaction.QuestionText, fullSolution, "")
 	if vErr != nil {
 		slog.Warn("router: verifier error, accepting solution", "error", vErr)
@@ -721,8 +745,9 @@ func (r *Router) emitModelPicker(out chan<- a2a.StreamEvent, vr *VerificationRes
 		},
 	}
 
-	// Build JSON payload for model picker
-	modelsJSON := `["` + strings.Join(r.retryModels, `","`) + `"]`
+	// Build JSON payload for model picker from the registry
+	retryIDs := config.RetryModelIDs()
+	modelsJSON := `["` + strings.Join(retryIDs, `","`) + `"]`
 	out <- a2a.StreamEvent{
 		Type:  "status",
 		State: a2a.TaskStateInputNeeded,
@@ -756,7 +781,7 @@ func (r *Router) handleRetryModel(ctx context.Context, task *a2a.Task, convID, u
 
 	slog.Info("router: retry_model", "model", modelName, "interaction", interaction.ID)
 	emitTransition(out, "router", "solver", task.ID,
-		fmt.Sprintf("student requested retry with model: %s", modelName))
+		fmt.Sprintf("retry with alternate model | model: %s | purpose: solver retry", modelName))
 
 	// Dispatch solver with the selected model
 	completed := r.dispatchSolverWithModel(ctx, task, interaction, modelName, out)
@@ -773,13 +798,27 @@ func (r *Router) handleRetryModel(ctx context.Context, task *a2a.Task, convID, u
 // ── Image extraction ─────────────────────────────────────────────────
 
 func (r *Router) extractImage(ctx context.Context, task *a2a.Task, out chan<- a2a.StreamEvent) (string, error) {
+	extractStart := time.Now()
 	extractor, ok := r.subAgents["image_extraction"]
 	if !ok {
 		return "", fmt.Errorf("image_extraction agent not registered")
 	}
 
 	extractTaskID := uuid.New().String()
-	emitTransition(out, "router", "image_extraction", extractTaskID, "input contains image — extracting text")
+	visionModel := config.DefaultVisionModel()
+	emitTransition(out, "router", "image_extraction", extractTaskID,
+		fmt.Sprintf("extracting text from image | model: %s", visionModel))
+
+	// Emit a progress artifact so the user knows extraction is underway
+	out <- a2a.StreamEvent{
+		Type: "artifact",
+		Message: &a2a.Message{
+			Role:  "agent",
+			Parts: []a2a.Part{a2a.TextPart(fmt.Sprintf("🔍 **Analysing image…** _(model: %s)_\nThis may take 15-30 seconds for complex diagrams.\n\n", visionModel))},
+		},
+	}
+
+	slog.Info("router: extractImage dispatching", "task", extractTaskID)
 
 	extractTask := &a2a.Task{
 		ID:        extractTaskID,
@@ -791,11 +830,19 @@ func (r *Router) extractImage(ctx context.Context, task *a2a.Task, out chan<- a2
 	}
 
 	result, err := extractor.Handle(ctx, extractTask)
+	extractDuration := time.Since(extractStart)
 	if err != nil {
+		slog.Error("router: extractImage failed",
+			"error", err,
+			"elapsed_ms", extractDuration.Milliseconds())
 		return "", fmt.Errorf("image extraction failed: %v", err)
 	}
 
-	emitTransition(out, "image_extraction", "router", extractTaskID, "extraction complete")
+	slog.Info("router: extractImage done",
+		"elapsed_ms", extractDuration.Milliseconds(),
+		"elapsed_s", fmt.Sprintf("%.1f", extractDuration.Seconds()))
+	emitTransition(out, "image_extraction", "router", extractTaskID,
+		fmt.Sprintf("extraction complete (%.1fs) | model: %s", extractDuration.Seconds(), visionModel))
 
 	if result.Output != nil {
 		for _, p := range result.Output.Parts {
