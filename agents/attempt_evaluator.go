@@ -41,8 +41,8 @@ func (a *AttemptEvaluatorAgent) Card() a2a.AgentCard {
 	}
 }
 
-const evaluatorSystemPrompt = `You are an expert academic evaluator for JEE/NEET preparation.
-
+var evaluatorSystemPrompt = `You are an expert academic evaluator for JEE/NEET preparation.
+` + mathPrecisionDirective + `
 Given:
 - The ORIGINAL QUESTION the student is solving.
 - The HINT LEVEL (1-3) they received before attempting.

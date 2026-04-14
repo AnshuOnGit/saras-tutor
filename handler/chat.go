@@ -24,20 +24,22 @@ import (
 
 // Valid actions the frontend can send.
 const (
-	ActionNewQuestion   = "new_question"
-	ActionMoreHelp      = "more_help"
-	ActionShowSolution  = "show_solution"
-	ActionRetryModel    = "retry_model"
-	ActionSubmitAttempt = "submit_attempt"
-	ActionClose         = "close"
+	ActionNewQuestion       = "new_question"
+	ActionConfirmExtraction = "confirm_extraction"
+	ActionMoreHelp          = "more_help"
+	ActionShowSolution      = "show_solution"
+	ActionRetryModel        = "retry_model"
+	ActionSubmitAttempt     = "submit_attempt"
+	ActionClose             = "close"
 )
 
 // ChatRequest is the JSON body expected on POST /chat (application/json).
 type ChatRequest struct {
 	UserID    string    `json:"user_id" binding:"required"`
 	SessionID string    `json:"session_id" binding:"required"`
-	Action    string    `json:"action"` // new_question | more_help | show_solution | retry_model | close
-	Model     string    `json:"model"`  // for retry_model: the model to use
+	Action    string    `json:"action"`   // new_question | more_help | show_solution | retry_model | close
+	Model     string    `json:"model"`    // DEPRECATED: use model_id
+	ModelID   string    `json:"model_id"` // optional: explicit model override (used by retry_model)
 	Message   ChatInput `json:"message"`
 }
 
@@ -76,9 +78,9 @@ func NewChatHandler(cfg *config.Config, pool *pgxpool.Pool) *ChatHandler {
 	//   visionLLM  → image extraction (heavy VLM)
 	//   solverLLM  → solver + hint agents (math-strong model)
 	//   routerLLM  → validator, parser, verifier, evaluator (fast/cheap)
-	visionLLM := llm.NewClient(cfg.LLMAPIKey, cfg.VisionModel, cfg.LLMBaseURL, cfg.LLMUserID)
-	solverLLM := llm.NewClient(cfg.LLMAPIKey, cfg.SolverModel, cfg.LLMBaseURL, cfg.LLMUserID)
-	routerLLM := llm.NewClient(cfg.LLMAPIKey, cfg.RouterModel, cfg.LLMBaseURL, cfg.LLMUserID)
+	visionLLM := llm.NewClient(cfg.LLMAPIKey, config.DefaultVisionModel(), cfg.LLMBaseURL, cfg.LLMUserID)
+	solverLLM := llm.NewClient(cfg.LLMAPIKey, config.DefaultSolverModel(), cfg.LLMBaseURL, cfg.LLMUserID)
+	routerLLM := llm.NewClient(cfg.LLMAPIKey, config.DefaultRouterModel(), cfg.LLMBaseURL, cfg.LLMUserID)
 
 	// Create sub-agents
 	imgAgent := agents.NewImageExtractionAgent(visionLLM, store)
@@ -156,6 +158,8 @@ func (h *ChatHandler) Handle(c *gin.Context) {
 			content = "[show_solution]"
 		case ActionRetryModel:
 			content = fmt.Sprintf("[retry_model:%s]", parsed.Model)
+		case ActionConfirmExtraction:
+			content = "[confirm_extraction]"
 		case ActionSubmitAttempt:
 			content = "[submit_attempt]"
 		case ActionClose:
@@ -374,11 +378,17 @@ func (h *ChatHandler) parseRequest(c *gin.Context) (*chatParsed, error) {
 		action = ActionNewQuestion
 	}
 
+	// Resolve model: prefer model_id, fall back to model (deprecated)
+	modelID := req.ModelID
+	if modelID == "" {
+		modelID = req.Model
+	}
+
 	parsed := &chatParsed{
 		UserID:    req.UserID,
 		SessionID: req.SessionID,
 		Action:    action,
-		Model:     req.Model,
+		Model:     modelID,
 		Text:      req.Message.Text,
 		ImageURI:  req.Message.ImageURL,
 	}

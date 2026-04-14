@@ -488,10 +488,12 @@ body,
   display: flex;
   gap: 8px;
   padding: 8px 14px 12px;
+  flex-wrap: wrap;
 }
 
 .btn-confirm,
-.btn-cancel {
+.btn-cancel,
+.btn-reextract {
   flex: 1;
   padding: 8px 0;
   border: none;
@@ -500,6 +502,7 @@ body,
   font-weight: 600;
   cursor: pointer;
   transition: filter 0.15s;
+  min-width: 120px;
 }
 
 .btn-confirm {
@@ -511,6 +514,16 @@ body,
   filter: brightness(0.9);
 }
 
+.btn-reextract {
+  background: #fff7ed;
+  color: #c2410c;
+  border: 2px solid #f97316;
+}
+
+.btn-reextract:hover {
+  background: #fed7aa;
+}
+
 .btn-cancel {
   background: #f1f5f9;
   color: var(--text);
@@ -519,6 +532,67 @@ body,
 
 .btn-cancel:hover {
   background: #e2e8f0;
+}
+
+/* ---- Re-extract Model Picker (inside ConfirmExtraction) ---- */
+.reextract-picker {
+  padding: 10px 14px 14px;
+  border-top: 1px solid var(--border);
+  background: #fffbeb;
+}
+
+.reextract-picker-label {
+  font-size: 0.82rem;
+  font-weight: 600;
+  color: #78716c;
+  margin-bottom: 6px;
+}
+
+.reextract-other-label {
+  margin-top: 12px;
+}
+
+.reextract-loading {
+  font-size: 0.82rem;
+  color: #a8a29e;
+  padding: 6px 0;
+}
+
+.reextract-cards {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-bottom: 4px;
+}
+
+.reextract-card {
+  padding: 7px 12px;
+  border: 2px solid #d6d3d1;
+  border-radius: 8px;
+  background: #fff;
+  cursor: pointer;
+  font-size: 0.82rem;
+  font-weight: 600;
+  color: #1c1917;
+  transition: all 0.15s ease;
+}
+
+.reextract-card:hover {
+  border-color: #f97316;
+  background: #fff7ed;
+  transform: translateY(-1px);
+  box-shadow: 0 2px 8px rgba(249, 115, 22, 0.15);
+}
+
+.reextract-card.vision {
+  border-color: #3b82f6;
+  background: #eff6ff;
+}
+
+.reextract-card.vision:hover {
+  border-color: #2563eb;
+  background: #dbeafe;
+  box-shadow: 0 2px 8px rgba(59, 130, 246, 0.2);
 }
 
 /* ---- Hint Actions ---- */
@@ -657,4 +731,132 @@ body,
 
 .btn-model-dismiss:hover {
   background: #e2e8f0;
+}
+
+/* ---- Model Expert Picker ---- */
+.expert-picker {
+  align-self: flex-start;
+  max-width: 95%;
+  width: 100%;
+  background: linear-gradient(135deg, #fff7ed 0%, #fefce8 100%);
+  border: 2px solid #f97316;
+  border-radius: 14px;
+  padding: 16px 18px;
+  margin: 6px 0;
+}
+
+.expert-picker-header {
+  font-weight: 700;
+  font-size: 0.95rem;
+  margin-bottom: 14px;
+  color: #c2410c;
+}
+
+.expert-picker-error {
+  color: #dc2626;
+  font-size: 0.85rem;
+  margin-bottom: 10px;
+}
+
+.expert-picker-groups {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+
+.expert-group {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.expert-group-label {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 0.82rem;
+  color: #78716c;
+  padding-bottom: 4px;
+  border-bottom: 1px solid #e7e5e4;
+}
+
+.expert-group-icon {
+  font-size: 1rem;
+}
+
+.expert-group-name {
+  font-weight: 700;
+  color: #44403c;
+}
+
+.expert-group-desc {
+  font-weight: 400;
+  font-size: 0.78rem;
+  color: #a8a29e;
+}
+
+.expert-cards {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.expert-card {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 4px;
+  padding: 10px 14px;
+  border: 2px solid #d6d3d1;
+  border-radius: 10px;
+  background: #fff;
+  cursor: pointer;
+  transition: all 0.15s ease;
+  min-width: 140px;
+}
+
+.expert-card:hover {
+  border-color: #f97316;
+  background: #fff7ed;
+  transform: translateY(-1px);
+  box-shadow: 0 2px 8px rgba(249, 115, 22, 0.15);
+}
+
+.expert-card.recommended {
+  border-color: #f97316;
+  background: linear-gradient(135deg, #fff7ed 0%, #fef3c7 100%);
+  box-shadow: 0 0 0 2px rgba(249, 115, 22, 0.15);
+}
+
+.expert-card.recommended:hover {
+  box-shadow: 0 2px 12px rgba(249, 115, 22, 0.25);
+}
+
+.expert-card-name {
+  font-weight: 600;
+  font-size: 0.85rem;
+  color: #1c1917;
+}
+
+.expert-badge {
+  display: inline-block;
+  font-size: 0.72rem;
+  font-weight: 700;
+  color: #ea580c;
+  background: #ffedd5;
+  padding: 2px 8px;
+  border-radius: 999px;
+  white-space: nowrap;
+}
+
+.expert-card-diff {
+  font-size: 0.75rem;
+  color: #a8a29e;
+  letter-spacing: 1px;
+}
+
+.expert-dismiss {
+  margin-top: 12px;
+  width: 100%;
+  text-align: center;
 }

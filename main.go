@@ -3,6 +3,7 @@ package main
 import (
 	"log/slog"
 	"os"
+	"strconv"
 
 	"saras-tutor/config"
 	"saras-tutor/db"
@@ -51,6 +52,39 @@ func main() {
 	// Health check
 	r.GET("/health", func(c *gin.Context) {
 		c.JSON(200, gin.H{"status": "ok"})
+	})
+
+	// Experts endpoint — returns model registry for the frontend model picker
+	r.GET("/experts", func(c *gin.Context) {
+		difficulty := 0
+		if d := c.Query("difficulty"); d != "" {
+			if v, err := strconv.Atoi(d); err == nil {
+				difficulty = v
+			}
+		}
+		subject := c.Query("subject")
+
+		recommendedID := config.SelectModelForTask(difficulty, subject, false)
+
+		type expertResponse struct {
+			ID                    string `json:"id"`
+			DisplayName           string `json:"display_name"`
+			Category              string `json:"category"`
+			RecommendedDifficulty int    `json:"recommended_difficulty"`
+			Recommended           bool   `json:"recommended"`
+		}
+
+		var experts []expertResponse
+		for _, m := range config.ModelRegistry {
+			experts = append(experts, expertResponse{
+				ID:                    m.ID,
+				DisplayName:           m.DisplayName,
+				Category:              string(m.Category),
+				RecommendedDifficulty: m.RecommendedDifficulty,
+				Recommended:           m.ID == recommendedID,
+			})
+		}
+		c.JSON(200, experts)
 	})
 
 	// Chat endpoint - streamable HTTP (SSE), accepts JSON or multipart/form-data

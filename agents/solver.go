@@ -32,8 +32,8 @@ func (a *SolverAgent) Card() a2a.AgentCard {
 	}
 }
 
-const solverSystemPrompt = `You are an expert JEE Advanced / NEET tutor and problem solver. Solve the given question with full mathematical rigour.
-
+var solverSystemPrompt = `You are an expert JEE Advanced / NEET tutor and problem solver. Solve the given question with full mathematical rigour.
+` + mathPrecisionDirective + `
 SOLVING APPROACH:
 1. **Identify** the core concept, relevant laws/theorems, and what is being asked.
 2. **Set up** the problem: define variables, draw free-body diagrams (describe them), write governing equations.

@@ -98,14 +98,14 @@ CREATE INDEX IF NOT EXISTS idx_interactions_conv_state
 -- ── Student profiles: long-term memory across sessions ──
 
 CREATE TABLE IF NOT EXISTS student_profiles (
-    user_id         TEXT PRIMARY KEY,
-    name            TEXT NOT NULL,
-    total_questions INT  NOT NULL DEFAULT 0,
-    aggr_stats      JSONB NOT NULL DEFAULT '[]'::jsonb
+    user_id          TEXT PRIMARY KEY,
+    display_name     TEXT NOT NULL DEFAULT '',
+    exam_target      TEXT NOT NULL DEFAULT 'BOTH' CHECK (exam_target IN ('JEE','NEET','BOTH')),
+    total_questions  INT  NOT NULL DEFAULT 0,
+    total_self_solved INT NOT NULL DEFAULT 0,
+    created_at       TIMESTAMPTZ NOT NULL DEFAULT now(),
+    updated_at       TIMESTAMPTZ NOT NULL DEFAULT now()
 );
-
-CREATE INDEX IF NOT EXISTS idx_student_profiles_user
-    ON student_profiles(user_id);
 
 -- ── Student attempts: tracks student work between hints ──
 
@@ -113,7 +113,9 @@ CREATE TABLE IF NOT EXISTS student_attempts (
     attempt_id     BIGSERIAL PRIMARY KEY,
     interaction_id TEXT NOT NULL REFERENCES interactions(id),
     user_id        TEXT NOT NULL,
-    hint_index     INT  NOT NULL CHECK (hint_index BETWEEN 1 AND 3),
+    hint_level     INT  NOT NULL CHECK (hint_level BETWEEN 1 AND 3),
+    score          REAL NOT NULL DEFAULT 0.0,
+    correct        BOOLEAN NOT NULL DEFAULT false,
     student_message TEXT NOT NULL,
     evaluator_json JSONB NOT NULL,
     created_at     TIMESTAMPTZ NOT NULL DEFAULT now()
@@ -135,9 +137,59 @@ CREATE TABLE IF NOT EXISTS interaction_topics (
 );
 
 CREATE INDEX IF NOT EXISTS idx_interaction_topics_topic ON interaction_topics(topic_id);
+
+-- ── Student topic mastery: per-topic aggregate learning signal ──
+
+CREATE TABLE IF NOT EXISTS student_topic_mastery (
+    user_id          TEXT   NOT NULL,
+    topic_id         BIGINT NOT NULL REFERENCES topics(topic_id),
+    mastery_score    REAL   NOT NULL DEFAULT 0.0,
+    total_attempts   INT    NOT NULL DEFAULT 0,
+    correct_attempts INT    NOT NULL DEFAULT 0,
+    avg_score        REAL   NOT NULL DEFAULT 0.0,
+    avg_hints_used   REAL   NOT NULL DEFAULT 0.0,
+    solutions_viewed INT    NOT NULL DEFAULT 0,
+    last_attempt_at  TIMESTAMPTZ,
+    updated_at       TIMESTAMPTZ NOT NULL DEFAULT now(),
+    PRIMARY KEY(user_id, topic_id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_student_topic_mastery_user
+    ON student_topic_mastery(user_id);
+CREATE INDEX IF NOT EXISTS idx_student_topic_mastery_score
+    ON student_topic_mastery(user_id, mastery_score);
 `
 	if _, err := pool.Exec(context.Background(), ddl); err != nil {
 		return fmt.Errorf("migrate: %w", err)
 	}
+
+	// ── Incremental migrations for existing databases ──
+	// These are safe to re-run (IF NOT EXISTS / ADD COLUMN IF NOT EXISTS).
+	migrations := []string{
+		// student_profiles: drop old columns, add new ones
+		`ALTER TABLE student_profiles ADD COLUMN IF NOT EXISTS display_name TEXT NOT NULL DEFAULT ''`,
+		`ALTER TABLE student_profiles ADD COLUMN IF NOT EXISTS exam_target TEXT NOT NULL DEFAULT 'BOTH'`,
+		`ALTER TABLE student_profiles ADD COLUMN IF NOT EXISTS total_self_solved INT NOT NULL DEFAULT 0`,
+		`ALTER TABLE student_profiles ADD COLUMN IF NOT EXISTS created_at TIMESTAMPTZ NOT NULL DEFAULT now()`,
+		`ALTER TABLE student_profiles ADD COLUMN IF NOT EXISTS updated_at TIMESTAMPTZ NOT NULL DEFAULT now()`,
+
+		// student_attempts: add promoted columns
+		`ALTER TABLE student_attempts ADD COLUMN IF NOT EXISTS score REAL NOT NULL DEFAULT 0.0`,
+		`ALTER TABLE student_attempts ADD COLUMN IF NOT EXISTS correct BOOLEAN NOT NULL DEFAULT false`,
+
+		// Rename hint_index → hint_level if old column exists
+		`DO $$ BEGIN
+			IF EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name='student_attempts' AND column_name='hint_index') THEN
+				ALTER TABLE student_attempts RENAME COLUMN hint_index TO hint_level;
+			END IF;
+		END $$`,
+	}
+	for _, m := range migrations {
+		if _, err := pool.Exec(context.Background(), m); err != nil {
+			// Log but don't fail — these are best-effort migrations
+			fmt.Printf("migration warning: %v\n", err)
+		}
+	}
+
 	return nil
 }

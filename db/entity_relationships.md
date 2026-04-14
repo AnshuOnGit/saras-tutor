@@ -72,19 +72,37 @@ erDiagram
 
     student_profiles {
         TEXT user_id PK
-        TEXT name
+        TEXT display_name
+        TEXT exam_target
         INT total_questions
-        JSONB aggr_stats
+        INT total_self_solved
+        TIMESTAMPTZ created_at
+        TIMESTAMPTZ updated_at
     }
 
     student_attempts {
         BIGSERIAL attempt_id PK
         TEXT interaction_id FK
-        TEXT user_id
-        INT hint_index
+        TEXT user_id FK
+        INT hint_level
+        REAL score
+        BOOLEAN correct
         TEXT student_message
         JSONB evaluator_json
         TIMESTAMPTZ created_at
+    }
+
+    student_topic_mastery {
+        TEXT user_id PK_FK
+        BIGINT topic_id PK_FK
+        REAL mastery_score
+        INT total_attempts
+        INT correct_attempts
+        REAL avg_score
+        REAL avg_hints_used
+        INT solutions_viewed
+        TIMESTAMPTZ last_attempt_at
+        TIMESTAMPTZ updated_at
     }
 
     conversations ||--o{ messages : "has"
@@ -94,7 +112,6 @@ erDiagram
 
     subjects ||--o{ chapters : "contains"
     chapters ||--o{ topics : "contains"
-    topics ||--o| topics : "parent"
 
     subjects ||--o{ interactions : "subject_id"
 
@@ -102,4 +119,8 @@ erDiagram
     topics ||--o{ interaction_topics : "referenced by"
 
     interactions ||--o{ student_attempts : "has"
+    student_profiles ||--o{ student_attempts : "made by"
+
+    student_profiles ||--o{ student_topic_mastery : "has"
+    topics ||--o{ student_topic_mastery : "tracked by"
 ```

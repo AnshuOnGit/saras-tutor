@@ -1,7 +1,8 @@
 import { useState, useRef, useEffect, useCallback } from "react";
 import MessageBubble from "./components/MessageBubble";
 import HintActions from "./components/HintActions";
-import ModelPicker from "./components/ModelPicker";
+import ModelExpertPicker from "./components/ModelExpertPicker";
+import ConfirmExtraction from "./components/ConfirmExtraction";
 import InputBar from "./components/InputBar";
 
 const DEFAULT_USER_ID = "test-user";
@@ -14,14 +15,21 @@ export default function App() {
   const [sessionId, setSessionId] = useState(DEFAULT_SESSION_ID);
   // Hint state: { hintLevel, question } when hint agent is waiting for student response
   const [pendingHint, setPendingHint] = useState(null);
-  // Model picker state: { models: [...] } when verifier rejects solution
+  // Model picker state: { difficulty, subject } when verifier rejects solution
   const [pendingModelPicker, setPendingModelPicker] = useState(null);
+  // Extraction confirmation state: { text } when image extraction needs student approval
+  const [pendingExtraction, setPendingExtraction] = useState(null);
   const bottomRef = useRef(null);
 
-  // Auto-scroll on new messages
+  // Debug: track state changes
+  useEffect(() => {
+    console.log("[STATE] pendingHint:", pendingHint, "pendingExtraction:", pendingExtraction, "streaming:", streaming);
+  }, [pendingHint, pendingExtraction, streaming]);
+
+  // Auto-scroll on new messages or when action panels appear
   useEffect(() => {
     bottomRef.current?.scrollIntoView({ behavior: "smooth" });
-  }, [messages]);
+  }, [messages, pendingHint, pendingExtraction, pendingModelPicker, streaming]);
 
   const sendMessage = useCallback(
     async (text, imageFile, action = "new_question") => {
@@ -169,12 +177,23 @@ export default function App() {
             .map((p) => p.text)
             .join("\n");
 
+          console.log("[SSE] input-needed rawText:", rawText);
+
           // Try to detect hint metadata (JSON with hint_level)
           try {
             const meta = JSON.parse(rawText);
-            if (meta.model_picker && meta.models) {
-              // Verifier failed — show model picker
-              setPendingModelPicker({ models: meta.models });
+            console.log("[SSE] parsed meta:", meta);
+            if (meta.model_picker) {
+              // Verifier failed — show model expert picker
+              setPendingModelPicker({
+                difficulty: meta.difficulty || 0,
+                subject: meta.subject || "",
+              });
+            } else if (meta.extraction_confirm) {
+              // Image extraction done — let student confirm before solving
+              setPendingExtraction({
+                text: meta.extracted_text || "",
+              });
             } else if (meta.attempt_evaluated) {
               // Attempt was evaluated but not fully correct — re-show hint actions
               setPendingHint({
@@ -182,13 +201,14 @@ export default function App() {
                 attemptScore: meta.score,
               });
             } else if (meta.hint_level !== undefined) {
+              console.log("[SSE] setting pendingHint, level:", meta.hint_level);
               setPendingHint({
                 hintLevel: meta.hint_level,
                 question: meta.question || "",
               });
             }
-          } catch {
-            // Not JSON — ignore
+          } catch (e) {
+            console.warn("[SSE] JSON parse failed:", e, "rawText:", rawText);
           }
           break;
         }
@@ -248,14 +268,115 @@ export default function App() {
   // Model picker handlers
   function handlePickModel(model) {
     setPendingModelPicker(null);
-    // Send retry_model action — sendMessage signature is (text, imageFile, action)
-    // We need to pass the model name. We'll extend the fetch call.
     sendRetryModel(model);
   }
 
   function handleDismissModelPicker() {
     setPendingModelPicker(null);
   }
+
+  // Extraction confirmation handlers
+  function handleConfirmExtraction() {
+    console.log("[handleConfirmExtraction] called, clearing pendingExtraction");
+    setPendingExtraction(null);
+    // Send confirm_extraction action so backend continues with parsing + hints
+    sendAction("confirm_extraction");
+  }
+
+  function handleReExtract(modelId) {
+    setPendingExtraction(null);
+    sendRetryModel(modelId);
+  }
+
+  function handleCancelExtraction() {
+    setPendingExtraction(null);
+    sendMessage("", null, "close");
+  }
+
+  // Generic action sender (no text, no image) that streams SSE back
+  const sendAction = useCallback(
+    async (action) => {
+      console.log("[sendAction] called with action:", action);
+      setStreaming(true);
+
+      const headers = { "Content-Type": "application/json" };
+      const body = JSON.stringify({
+        user_id: userId,
+        session_id: sessionId,
+        action,
+        message: { content_type: "text", text: "" },
+      });
+
+      try {
+        const res = await fetch("/chat", { method: "POST", headers, body });
+        if (!res.ok) {
+          const errText = await res.text();
+          setMessages((prev) => [
+            ...prev,
+            { id: crypto.randomUUID(), role: "error", text: `Error ${res.status}: ${errText}` },
+          ]);
+          setStreaming(false);
+          return;
+        }
+
+        const reader = res.body.getReader();
+        const decoder = new TextDecoder();
+        let buffer = "";
+        let assistantId = crypto.randomUUID();
+        let assistantText = "";
+
+        while (true) {
+          const { value, done } = await reader.read();
+          if (done) break;
+          buffer += decoder.decode(value, { stream: true });
+
+          const frames = buffer.split("\n\n");
+          buffer = frames.pop();
+
+          for (const frame of frames) {
+            const line = frame.trim();
+            if (!line.startsWith("data: ")) continue;
+            const payload = line.slice(6);
+            if (payload === "[DONE]") continue;
+
+            try {
+              const ev = JSON.parse(payload);
+
+              if (ev.type === "new_turn") {
+                assistantId = crypto.randomUUID();
+                assistantText = "";
+                continue;
+              }
+
+              handleSSEEvent(ev, assistantId, assistantText, (newText) => {
+                assistantText = newText;
+                setMessages((prev) => {
+                  const existing = prev.find((m) => m.id === assistantId);
+                  if (existing) {
+                    return prev.map((m) => (m.id === assistantId ? { ...m, text: assistantText } : m));
+                  }
+                  return [
+                    ...prev,
+                    { id: assistantId, role: "assistant", text: assistantText },
+                  ];
+                });
+              });
+            } catch {
+              // ignore
+            }
+          }
+        }
+      } catch (err) {
+        setMessages((prev) => [
+          ...prev,
+          { id: crypto.randomUUID(), role: "error", text: `Network error: ${err.message}` },
+        ]);
+      }
+
+      setStreaming(false);
+    },
+    [userId, sessionId]
+  );
 
   // Send a retry_model request with the selected model
   const sendRetryModel = useCallback(
@@ -382,9 +503,18 @@ export default function App() {
             onDismiss={handleDismissHint}
           />
         )}
+        {pendingExtraction && !streaming && (
+          <ConfirmExtraction
+            text={pendingExtraction.text}
+            onConfirm={handleConfirmExtraction}
+            onReExtract={handleReExtract}
+            onCancel={handleCancelExtraction}
+          />
+        )}
         {pendingModelPicker && !streaming && (
-          <ModelPicker
-            models={pendingModelPicker.models}
+          <ModelExpertPicker
+            difficulty={pendingModelPicker.difficulty}
+            subject={pendingModelPicker.subject}
             onPickModel={handlePickModel}
             onDismiss={handleDismissModelPicker}
           />
@@ -407,7 +537,7 @@ export default function App() {
             sendMessage(text, imageFile);
           }
         }}
-        disabled={streaming || !!pendingModelPicker}
+        disabled={streaming || !!pendingModelPicker || !!pendingExtraction}
         placeholder={pendingHint ? "Type your attempt or attach a photo of your work…" : undefined}
       />
     </div>

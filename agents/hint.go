@@ -45,8 +45,8 @@ func (a *HintAgent) Card() a2a.AgentCard {
 
 // --- Hint prompts by level ---
 
-const hintLevel1Prompt = `You are a supportive tutor helping a JEE/NEET student. The student has asked about a problem.
-
+var hintLevel1Prompt = `You are a supportive tutor helping a JEE/NEET student. The student has asked about a problem.
+` + mathPrecisionDirective + `
 YOUR ROLE: Give a **Level 1 hint** — a gentle nudge to help them think in the right direction.
 
 RULES:
@@ -66,8 +66,8 @@ QUESTION:
 
 Remember: You are helping them THINK, not solving for them.`
 
-const hintLevel2Prompt = `You are a supportive tutor helping a JEE/NEET student. They've already received a gentle hint but need more help.
-
+var hintLevel2Prompt = `You are a supportive tutor helping a JEE/NEET student. They've already received a gentle hint but need more help.
+` + mathPrecisionDirective + `
 YOUR ROLE: Give a **Level 2 hint** — outline the approach and show the first step.
 
 RULES:
@@ -87,8 +87,8 @@ QUESTION:
 
 Remember: Show just enough to unblock them, not everything.`
 
-const hintLevel3Prompt = `You are a supportive tutor helping a JEE/NEET student. They've asked for more help after two hints.
-
+var hintLevel3Prompt = `You are a supportive tutor helping a JEE/NEET student. They've asked for more help after two hints.
+` + mathPrecisionDirective + `
 YOUR ROLE: Give a **Level 3 hint** — a detailed walkthrough with most steps shown.
 
 RULES:

@@ -8,6 +8,7 @@ export default defineConfig({
     proxy: {
       "/chat": "http://localhost:8080",
       "/health": "http://localhost:8080",
+      "/experts": "http://localhost:8080",
     },
   },
 });

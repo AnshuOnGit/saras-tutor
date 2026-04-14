@@ -96,7 +96,9 @@ type StudentAttempt struct {
 	AttemptID      int64           `json:"attempt_id"`
 	InteractionID  string          `json:"interaction_id"`
 	UserID         string          `json:"user_id"`
-	HintIndex      int             `json:"hint_index"` // 1-3
+	HintLevel      int             `json:"hint_level"` // 1-3: which hint level was active
+	Score          float64         `json:"score"`      // 0.0–1.0 (promoted from evaluator_json)
+	Correct        bool            `json:"correct"`    // promoted from evaluator_json
 	StudentMessage string          `json:"student_message"`
 	EvaluatorJSON  EvaluatorResult `json:"evaluator_json"`
 	CreatedAt      time.Time       `json:"created_at"`
@@ -131,23 +133,56 @@ type Interaction struct {
 	UpdatedAt      time.Time        `json:"updated_at"`
 }
 
-type ProfileQuestionStat struct {
-	TopicSubtopics  []string `json:"topic_subtopics"`
-	DifficultyLevel int      `json:"difficulty_level"`
-	HintLevel       int      `json:"hint_level"`
-	SelfSolved      *bool    `json:"self_solved,omitempty"`
-}
-
-type ConversationAggrStat struct {
-	ConversationID string                `json:"conversation_id"`
-	Questions      []ProfileQuestionStat `json:"questions"`
-}
-
 // StudentProfile stores long-term learning patterns for a student.
-// This is the "long-term memory" — one aggregate record per conversation.
 type StudentProfile struct {
-	Name           string                 `json:"name"`
-	UserID         string                 `json:"user_id"`
-	TotalQuestions int                    `json:"total_questions"`
-	AggrStats      []ConversationAggrStat `json:"aggr_stats,omitempty"`
+	UserID          string    `json:"user_id"`
+	DisplayName     string    `json:"display_name"`
+	ExamTarget      string    `json:"exam_target"` // JEE | NEET | BOTH
+	TotalQuestions  int       `json:"total_questions"`
+	TotalSelfSolved int       `json:"total_self_solved"`
+	CreatedAt       time.Time `json:"created_at"`
+	UpdatedAt       time.Time `json:"updated_at"`
+}
+
+// StudentTopicMastery stores per-topic aggregate learning signal.
+type StudentTopicMastery struct {
+	UserID          string     `json:"user_id"`
+	TopicID         int64      `json:"topic_id"`
+	MasteryScore    float64    `json:"mastery_score"` // 0.0–1.0 weighted composite
+	TotalAttempts   int        `json:"total_attempts"`
+	CorrectAttempts int        `json:"correct_attempts"`
+	AvgScore        float64    `json:"avg_score"`        // mean attempt score on this topic
+	AvgHintsUsed    float64    `json:"avg_hints_used"`   // mean hints consumed before correct
+	SolutionsViewed int        `json:"solutions_viewed"` // full solution requests
+	LastAttemptAt   *time.Time `json:"last_attempt_at,omitempty"`
+	UpdatedAt       time.Time  `json:"updated_at"`
+}
+
+// ComputeMasteryScore calculates the weighted composite mastery score.
+//
+//	mastery = 0.40·avg_score + 0.30·self_solve_rate − 0.15·hint_penalty − 0.15·solution_penalty
+//
+// Where:
+//
+//	self_solve_rate = correct_attempts / total_attempts
+//	hint_penalty    = avg_hints_used / 3   (normalised to 0–1)
+//	solution_penalty = solutions_viewed / total_attempts
+func (m *StudentTopicMastery) ComputeMasteryScore() float64 {
+	if m.TotalAttempts == 0 {
+		return 0.0
+	}
+	selfSolveRate := float64(m.CorrectAttempts) / float64(m.TotalAttempts)
+	hintPenalty := m.AvgHintsUsed / 3.0
+	solutionPenalty := float64(m.SolutionsViewed) / float64(m.TotalAttempts)
+
+	score := 0.40*m.AvgScore + 0.30*selfSolveRate - 0.15*hintPenalty - 0.15*solutionPenalty
+
+	// Clamp to [0, 1]
+	if score < 0 {
+		score = 0
+	}
+	if score > 1 {
+		score = 1
+	}
+	return score
 }

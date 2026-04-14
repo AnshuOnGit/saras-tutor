@@ -2,6 +2,8 @@ package agents
 
 import (
 	"context"
+	"encoding/base64"
+	"encoding/json"
 	"fmt"
 	"log/slog"
 	"strings"
@@ -32,22 +34,44 @@ import (
 
 // Router replaces the old LLM-based supervisor. It implements a2a.Agent.
 type Router struct {
-	store       *db.Store
-	cfg         *config.Config
-	llmClient   *llm.Client // lightweight client for utility calls (validation, etc.)
-	subAgents   map[string]a2a.Agent
-	retryModels []string // alternative models for user to pick
+	store     *db.Store
+	cfg       *config.Config
+	llmClient *llm.Client // lightweight client for utility calls (validation, etc.)
+	subAgents map[string]a2a.Agent
 }
 
 // NewRouter creates the deterministic router.
 func NewRouter(store *db.Store, cfg *config.Config, llmClient *llm.Client, subAgents map[string]a2a.Agent) *Router {
 	return &Router{
-		store:       store,
-		cfg:         cfg,
-		llmClient:   llmClient,
-		subAgents:   subAgents,
-		retryModels: cfg.RetryModels,
+		store:     store,
+		cfg:       cfg,
+		llmClient: llmClient,
+		subAgents: subAgents,
 	}
+}
+
+// resolveTargetModel determines which LLM to use for a given interaction.
+// If the task metadata contains an explicit "model" (from retry_model), use that.
+// Otherwise, call SelectModelForTask based on the interaction's difficulty and subject.
+func (r *Router) resolveTargetModel(ctx context.Context, task *a2a.Task, interaction *models.Interaction) string {
+	// Explicit model from frontend (retry_model action)
+	if task.Metadata != nil && task.Metadata["model"] != "" {
+		return task.Metadata["model"]
+	}
+
+	// Auto-select based on difficulty + subject
+	subjectName := ""
+	if interaction != nil {
+		subjectName = r.store.LookupSubjectName(ctx, interaction.SubjectID)
+	}
+	difficulty := 0
+	if interaction != nil {
+		difficulty = interaction.Difficulty
+	}
+
+	selected := config.SelectModelForTask(difficulty, subjectName, false)
+	slog.Info("router: auto-selected model", "model", selected, "difficulty", difficulty, "subject", subjectName)
+	return selected
 }
 
 // Card satisfies a2a.Agent.
@@ -104,6 +128,8 @@ func (r *Router) HandleStream(ctx context.Context, task *a2a.Task, out chan<- a2
 	switch action {
 	case "new_question":
 		r.handleNewQuestion(ctx, task, convID, userID, out)
+	case "confirm_extraction":
+		r.handleConfirmExtraction(ctx, task, convID, userID, out)
 	case "more_help":
 		r.handleMoreHelp(ctx, task, convID, userID, out)
 	case "show_solution":
@@ -149,6 +175,38 @@ func (r *Router) handleNewQuestion(ctx context.Context, task *a2a.Task, convID, 
 				Parts: []a2a.Part{a2a.TextPart("**Extracted from image:**\n\n" + questionText)},
 			},
 		}
+
+		// ── Pause for student confirmation ──
+		// Create a preliminary interaction to hold the image_id so
+		// re-extraction via retry_model has access to the image.
+		imageID := ""
+		if task.Metadata != nil {
+			imageID = task.Metadata["image_id"]
+		}
+		interaction := &models.Interaction{
+			ID:             uuid.New().String(),
+			ConversationID: convID,
+			QuestionText:   questionText,
+			ImageID:        imageID,
+			State:          models.InteractionNew,
+			CreatedAt:      time.Now().UTC(),
+		}
+		if err := r.store.CreateInteraction(ctx, interaction); err != nil {
+			slog.Warn("router: create preliminary interaction", "error", err)
+		}
+
+		extractedJSON, _ := json.Marshal(questionText)
+		out <- a2a.StreamEvent{
+			Type:  "status",
+			State: a2a.TaskStateInputNeeded,
+			Message: &a2a.Message{
+				Role: "agent",
+				Parts: []a2a.Part{a2a.TextPart(fmt.Sprintf(
+					`{"extraction_confirm":true,"extracted_text":%s}`,
+					extractedJSON))},
+			},
+		}
+		return // wait for confirm_extraction or retry_model from frontend
 	}
 
 	if questionText == "" {
@@ -221,13 +279,103 @@ func (r *Router) handleNewQuestion(ctx context.Context, task *a2a.Task, convID, 
 		if _, err := r.store.GetOrCreateProfile(ctx, userID); err != nil {
 			slog.Warn("router: get/create profile", "error", err)
 		}
-		if err := r.store.AppendProfileQuestionStat(ctx, userID, convID, chapterName, topicNames, difficulty); err != nil {
-			slog.Warn("router: append aggr_stats", "error", err)
+		if err := r.store.IncrementProfileQuestions(ctx, userID); err != nil {
+			slog.Warn("router: increment questions", "error", err)
 		}
 	}
 
-	// 8. Dispatch Hint Level 1
-	r.dispatchHint(ctx, task, interaction, 1, out)
+	// 8. Auto-select the best model for this question and store in metadata
+	targetModel := r.resolveTargetModel(ctx, task, interaction)
+	if task.Metadata == nil {
+		task.Metadata = map[string]string{}
+	}
+	task.Metadata["target_model"] = targetModel
+
+	// 9. Dispatch Hint Level 1 (using the auto-selected model)
+	r.dispatchHintWithModel(ctx, task, interaction, 1, targetModel, out)
+}
+
+// handleConfirmExtraction is called when the student confirms that the image
+// extraction looks correct. It continues the flow: validate → parse → hint.
+func (r *Router) handleConfirmExtraction(ctx context.Context, task *a2a.Task, convID, userID string, out chan<- a2a.StreamEvent) {
+	interaction, err := r.store.GetActiveInteraction(ctx, convID)
+	if err != nil || interaction == nil {
+		slog.Info("router: no active interaction for confirm_extraction, treating as new question")
+		r.handleNewQuestion(ctx, task, convID, userID, out)
+		return
+	}
+
+	questionText := interaction.QuestionText
+	if questionText == "" {
+		out <- a2a.StreamEvent{Type: "error", Error: "no extracted text found for confirmation"}
+		return
+	}
+
+	slog.Info("router: extraction confirmed", "interaction", interaction.ID, "text_len", len(questionText))
+
+	// 1. Validate the question
+	vr, _ := ValidateQuestion(ctx, r.llmClient, questionText)
+	if vr != nil && !vr.Valid {
+		slog.Info("router: question rejected", "reason", vr.Reason)
+		out <- a2a.StreamEvent{
+			Type: "artifact",
+			Message: &a2a.Message{
+				Role:  "agent",
+				Parts: []a2a.Part{a2a.TextPart(InvalidQuestionMessage(vr))},
+			},
+		}
+		out <- a2a.StreamEvent{Type: "status", State: a2a.TaskStateCompleted}
+		return
+	}
+
+	// 2. Parse the question
+	parsedQ, _ := ParseQuestion(ctx, r.llmClient, questionText)
+	var subjectName, chapterName string
+	var topicNames []string
+	difficulty := 0
+	problemText := questionText
+
+	if parsedQ != nil {
+		subjectName = parsedQ.Subject
+		chapterName = parsedQ.Chapter
+		topicNames = parsedQ.Topics
+		difficulty = parsedQ.Difficulty
+		if parsedQ.Question != "" {
+			problemText = parsedQ.Question
+		}
+	}
+	slog.Info("router: parsed metadata", "subject", subjectName, "chapter", chapterName, "topics", topicNames, "difficulty", difficulty)
+
+	// 3. Resolve taxonomy IDs and update the interaction
+	subjectID := r.store.LookupSubjectID(ctx, subjectName)
+	topicIDs := r.store.LookupTopicIDs(ctx, topicNames)
+
+	interaction.SubjectID = subjectID
+	interaction.TopicIDs = topicIDs
+	interaction.Difficulty = difficulty
+	interaction.ProblemText = problemText
+	if err := r.store.UpdateInteractionMetadata(ctx, interaction); err != nil {
+		slog.Warn("router: update interaction metadata", "error", err)
+	}
+
+	// 4. Update student profile
+	if userID != "" {
+		if _, err := r.store.GetOrCreateProfile(ctx, userID); err != nil {
+			slog.Warn("router: get/create profile", "error", err)
+		}
+		if err := r.store.IncrementProfileQuestions(ctx, userID); err != nil {
+			slog.Warn("router: increment questions", "error", err)
+		}
+	}
+
+	// 5. Auto-select the best model and dispatch hint
+	targetModel := r.resolveTargetModel(ctx, task, interaction)
+	if task.Metadata == nil {
+		task.Metadata = map[string]string{}
+	}
+	task.Metadata["target_model"] = targetModel
+
+	r.dispatchHintWithModel(ctx, task, interaction, 1, targetModel, out)
 }
 
 func (r *Router) handleMoreHelp(ctx context.Context, task *a2a.Task, convID, userID string, out chan<- a2a.StreamEvent) {
@@ -247,7 +395,8 @@ func (r *Router) handleMoreHelp(ctx context.Context, task *a2a.Task, convID, use
 		return
 	}
 
-	r.dispatchHint(ctx, task, interaction, nextLevel, out)
+	targetModel := r.resolveTargetModel(ctx, task, interaction)
+	r.dispatchHintWithModel(ctx, task, interaction, nextLevel, targetModel, out)
 }
 
 func (r *Router) handleShowSolution(ctx context.Context, task *a2a.Task, convID, userID string, out chan<- a2a.StreamEvent) {
@@ -258,11 +407,14 @@ func (r *Router) handleShowSolution(ctx context.Context, task *a2a.Task, convID,
 		return
 	}
 
-	slog.Info("router: dispatching solver", "interaction", interaction.ID)
+	// Auto-select the best model for this interaction
+	targetModel := r.resolveTargetModel(ctx, task, interaction)
+
+	slog.Info("router: dispatching solver", "interaction", interaction.ID, "model", targetModel)
 	emitTransition(out, "router", "solver", task.ID, "student requested full solution")
 
-	// Dispatch solver with the original question (+ image if verifier low)
-	completed := r.dispatchSolver(ctx, task, interaction, out)
+	// Dispatch solver with the auto-selected model
+	completed := r.dispatchSolverWithModel(ctx, task, interaction, targetModel, out)
 
 	if completed {
 		// Mark interaction as solved only if fully completed (not awaiting model picker)
@@ -270,9 +422,9 @@ func (r *Router) handleShowSolution(ctx context.Context, task *a2a.Task, convID,
 			slog.Warn("router: close interaction", "error", err)
 		}
 
-		// Update long-term memory
+		// Update long-term memory + topic mastery (selfSolved=false — needed full solution)
 		if userID != "" {
-			if err := r.store.UpdateProfileQuestionOutcome(ctx, userID, convID, interaction.HintLevel, false); err != nil {
+			if err := r.store.RecordInteractionOutcome(ctx, userID, interaction, false); err != nil {
 				slog.Warn("router: record outcome", "error", err)
 			}
 		}
@@ -302,9 +454,9 @@ func (r *Router) handleClose(ctx context.Context, task *a2a.Task, convID, userID
 		slog.Warn("router: close interaction", "error", err)
 	}
 
-	// Update long-term memory
+	// Update long-term memory + topic mastery (selfSolved=true — student closed without needing solution)
 	if userID != "" {
-		if err := r.store.UpdateProfileQuestionOutcome(ctx, userID, convID, interaction.HintLevel, true); err != nil {
+		if err := r.store.RecordInteractionOutcome(ctx, userID, interaction, true); err != nil {
 			slog.Warn("router: record outcome", "error", err)
 		}
 	}
@@ -389,7 +541,9 @@ func (r *Router) handleSubmitAttempt(ctx context.Context, task *a2a.Task, convID
 	attempt := &models.StudentAttempt{
 		InteractionID:  interaction.ID,
 		UserID:         userID,
-		HintIndex:      hintLevel,
+		HintLevel:      hintLevel,
+		Score:          result.Score,
+		Correct:        result.Correct,
 		StudentMessage: attemptMessage,
 		EvaluatorJSON:  *result,
 	}
@@ -456,7 +610,7 @@ func (r *Router) handleSubmitAttempt(ctx context.Context, task *a2a.Task, convID
 			slog.Warn("router: close interaction after correct attempt", "error", err)
 		}
 		if userID != "" {
-			if err := r.store.UpdateProfileQuestionOutcome(ctx, userID, convID, interaction.HintLevel, true); err != nil {
+			if err := r.store.RecordInteractionOutcome(ctx, userID, interaction, true); err != nil {
 				slog.Warn("router: record outcome", "error", err)
 			}
 		}
@@ -489,14 +643,30 @@ func (r *Router) handleSubmitAttempt(ctx context.Context, task *a2a.Task, convID
 // ── Dispatchers ──────────────────────────────────────────────────────
 
 func (r *Router) dispatchHint(ctx context.Context, task *a2a.Task, interaction *models.Interaction, level int, out chan<- a2a.StreamEvent) {
+	r.dispatchHintWithModel(ctx, task, interaction, level, "", out)
+}
+
+// dispatchHintWithModel dispatches a hint, optionally overriding the model.
+func (r *Router) dispatchHintWithModel(ctx context.Context, task *a2a.Task, interaction *models.Interaction, level int, modelOverride string, out chan<- a2a.StreamEvent) {
 	hintAgent, ok := r.subAgents["hint"]
 	if !ok {
 		out <- a2a.StreamEvent{Type: "error", Error: "hint agent not registered"}
 		return
 	}
 
+	// If modelOverride is set, create a temporary hint agent with that model
+	if modelOverride != "" {
+		altClient := llm.NewClient(r.cfg.LLMAPIKey, modelOverride, r.cfg.LLMBaseURL, r.cfg.LLMUserID)
+		hintAgent = NewHintAgent(altClient, r.store)
+		slog.Info("router: hint using override model", "model", modelOverride)
+	}
+
 	hintTaskID := uuid.New().String()
-	emitTransition(out, "router", "hint", hintTaskID, fmt.Sprintf("giving hint level %d", level))
+	modelLabel := config.DefaultSolverModel()
+	if modelOverride != "" {
+		modelLabel = modelOverride
+	}
+	emitTransition(out, "router", "hint", hintTaskID, fmt.Sprintf("giving hint level %d (model: %s)", level, modelLabel))
 
 	// All hints use extracted text only — images are consumed solely by
 	// the image_extraction agent to avoid redundant vision-model costs.
@@ -604,7 +774,7 @@ func (r *Router) dispatchSolverWithModel(ctx context.Context, task *a2a.Task, in
 	verifier, hasVerifier := r.subAgents["verifier"]
 
 	solveTaskID := uuid.New().String()
-	modelLabel := r.cfg.SolverModel
+	modelLabel := config.DefaultSolverModel()
 	if modelOverride != "" {
 		modelLabel = modelOverride
 	}
@@ -721,22 +891,30 @@ func (r *Router) emitModelPicker(out chan<- a2a.StreamEvent, vr *VerificationRes
 		},
 	}
 
-	// Build JSON payload for model picker
-	modelsJSON := `["` + strings.Join(r.retryModels, `","`) + `"]`
+	// Build JSON payload for model picker (include difficulty & subject for /experts)
+	difficulty := interaction.Difficulty
+	subject := ""
+	if interaction.SubjectID != nil {
+		subject = r.store.LookupSubjectName(context.Background(), interaction.SubjectID)
+	}
 	out <- a2a.StreamEvent{
 		Type:  "status",
 		State: a2a.TaskStateInputNeeded,
 		Message: &a2a.Message{
 			Role: "agent",
 			Parts: []a2a.Part{a2a.TextPart(fmt.Sprintf(
-				`{"model_picker":true,"models":%s,"interaction_id":"%s"}`,
-				modelsJSON, interaction.ID))},
+				`{"model_picker":true,"difficulty":%d,"subject":"%s","interaction_id":"%s"}`,
+				difficulty, subject, interaction.ID))},
 		},
 	}
 }
 
 // handleRetryModel is called when the user picks an alternative model after
 // the verifier rejected the initial solution.
+//
+// Special case: if the selected model is a Vision model, we re-run image
+// extraction with the original image, update the interaction's question_text,
+// and then solve with the freshly-extracted text.
 func (r *Router) handleRetryModel(ctx context.Context, task *a2a.Task, convID, userID string, out chan<- a2a.StreamEvent) {
 	interaction, err := r.store.GetActiveInteraction(ctx, convID)
 	if err != nil || interaction == nil {
@@ -755,10 +933,17 @@ func (r *Router) handleRetryModel(ctx context.Context, task *a2a.Task, convID, u
 	}
 
 	slog.Info("router: retry_model", "model", modelName, "interaction", interaction.ID)
+
+	// ── Vision model branch: re-extract then solve ──
+	if isVisionModel(modelName) {
+		r.handleRetryVision(ctx, task, interaction, modelName, out)
+		return
+	}
+
+	// ── Standard branch: re-solve with a different text model ──
 	emitTransition(out, "router", "solver", task.ID,
 		fmt.Sprintf("student requested retry with model: %s", modelName))
 
-	// Dispatch solver with the selected model
 	completed := r.dispatchSolverWithModel(ctx, task, interaction, modelName, out)
 
 	if completed {
@@ -768,6 +953,123 @@ func (r *Router) handleRetryModel(ctx context.Context, task *a2a.Task, convID, u
 	} else {
 		slog.Info("router: retry_model solver still needs model picker")
 	}
+}
+
+// handleRetryVision re-runs image extraction with a vision model, updates
+// the interaction's question_text, then dispatches the solver.
+func (r *Router) handleRetryVision(ctx context.Context, task *a2a.Task, interaction *models.Interaction, visionModel string, out chan<- a2a.StreamEvent) {
+	// 1. Load the original image from the DB
+	if interaction.ImageID == "" {
+		out <- a2a.StreamEvent{Type: "error", Error: "no image stored for this question — cannot re-extract"}
+		return
+	}
+
+	img, err := r.store.GetImage(ctx, interaction.ImageID)
+	if err != nil {
+		slog.Error("router: failed to load image for re-extraction", "image_id", interaction.ImageID, "error", err)
+		out <- a2a.StreamEvent{Type: "error", Error: "failed to load original image"}
+		return
+	}
+
+	// 2. Build a data URI from the stored image bytes
+	dataURI := fmt.Sprintf("data:%s;base64,%s",
+		img.MimeType,
+		base64Encode(img.Data),
+	)
+
+	emitTransition(out, "router", "image_extraction", task.ID,
+		fmt.Sprintf("re-extracting image with vision model: %s", visionModel))
+
+	// 3. Build a temporary extraction task with the image
+	extractor, ok := r.subAgents["image_extraction"]
+	if !ok {
+		out <- a2a.StreamEvent{Type: "error", Error: "image_extraction agent not registered"}
+		return
+	}
+
+	// Create a temporary vision-model extractor if different from default
+	altVisionClient := llm.NewClient(r.cfg.LLMAPIKey, visionModel, r.cfg.LLMBaseURL, r.cfg.LLMUserID)
+	altVisionClient.MaxTokens = 4096
+	extractor = NewImageExtractionAgent(altVisionClient, r.store)
+
+	extractTask := &a2a.Task{
+		ID:      uuid.New().String(),
+		AgentID: "image_extraction",
+		State:   a2a.TaskStateSubmitted,
+		Input: a2a.Message{
+			Role:  "user",
+			Parts: []a2a.Part{a2a.ImagePart(dataURI)},
+		},
+		Metadata:  task.Metadata,
+		CreatedAt: time.Now().UTC(),
+	}
+
+	result, err := extractor.Handle(ctx, extractTask)
+	if err != nil {
+		slog.Error("router: vision re-extraction failed", "error", err)
+		out <- a2a.StreamEvent{Type: "error", Error: "image re-extraction failed: " + err.Error()}
+		return
+	}
+
+	// 4. Extract the new text
+	newText := ""
+	if result.Output != nil {
+		for _, p := range result.Output.Parts {
+			if p.Type == "text" {
+				newText = p.Text
+				break
+			}
+		}
+	}
+	if newText == "" {
+		out <- a2a.StreamEvent{Type: "error", Error: "vision re-extraction returned no text"}
+		return
+	}
+
+	emitTransition(out, "image_extraction", "router", task.ID, "re-extraction complete")
+
+	// 5. Show the new extraction to the student
+	out <- a2a.StreamEvent{
+		Type: "artifact",
+		Message: &a2a.Message{
+			Role:  "agent",
+			Parts: []a2a.Part{a2a.TextPart("**Re-extracted from image (" + visionModel + "):**\n\n" + newText)},
+		},
+	}
+
+	// 6. Update the interaction's question_text in the DB
+	interaction.QuestionText = newText
+	if err := r.store.UpdateInteractionQuestionText(ctx, interaction.ID, newText); err != nil {
+		slog.Warn("router: failed to update question_text", "error", err)
+	}
+	slog.Info("router: question_text updated from vision re-extraction",
+		"interaction", interaction.ID, "model", visionModel, "text_len", len(newText))
+
+	// 7. Pause for student confirmation again (they may want to re-extract once more)
+	reExtractedJSON, _ := json.Marshal(newText)
+	out <- a2a.StreamEvent{
+		Type:  "status",
+		State: a2a.TaskStateInputNeeded,
+		Message: &a2a.Message{
+			Role: "agent",
+			Parts: []a2a.Part{a2a.TextPart(fmt.Sprintf(
+				`{"extraction_confirm":true,"extracted_text":%s}`,
+				reExtractedJSON))},
+		},
+	}
+	// Student will send confirm_extraction to continue or retry_model to re-extract again.
+}
+
+// isVisionModel returns true if the model ID is a vision-capable VLM
+// from the model registry.
+func isVisionModel(modelID string) bool {
+	m := config.GetModelByID(modelID)
+	return m != nil && m.Category == config.CategoryVision
+}
+
+// base64Encode is a small helper wrapping encoding/base64.
+func base64Encode(data []byte) string {
+	return base64.StdEncoding.EncodeToString(data)
 }
 
 // ── Image extraction ─────────────────────────────────────────────────

@@ -67,7 +67,7 @@ func (a *ImageExtractionAgent) Card() a2a.AgentCard {
 "- confidence: how certain you are that you extracted ALL content correctly (1.0 = fully certain, lower if image is unclear or you may have missed something).\n" +
 "- content: your full extracted markdown (escape inner quotes as needed)."*/
 
-const imageExtractionPrompt = `You are an expert OCR system for JEE/NEET exam questions. Extract ALL content from the image as clean Markdown.
+var imageExtractionPrompt = `You are an expert OCR system for JEE/NEET exam questions. Extract ALL content from the image as clean Markdown.
 
 RESPOND WITH ONLY THIS JSON (no code fences, no extra text):
 {"confidence": 0.0-1.0, "content": "<markdown here>"}
