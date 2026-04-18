@@ -614,11 +614,57 @@ body,
   padding: 14px;
 }
 
+.model-picker.optional {
+  background: #f0f9ff;
+  border-color: #38bdf8;
+}
+
+.model-picker.gated {
+  background: #f0fdf4;
+  border-color: #22c55e;
+}
+
 .model-picker-header {
   font-weight: 600;
   font-size: 0.9rem;
   margin-bottom: 10px;
   color: #c2410c;
+}
+
+.model-picker.optional .model-picker-header {
+  color: #0369a1;
+}
+
+.model-picker.gated .model-picker-header {
+  color: #15803d;
+}
+
+.model-picker-reason {
+  font-size: 0.8rem;
+  color: #475569;
+  margin-bottom: 8px;
+  line-height: 1.35;
+}
+
+.model-picker-current {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  margin-bottom: 10px;
+  font-size: 0.75rem;
+  color: #64748b;
+}
+
+.model-picker-current .tag {
+  background: #e2e8f0;
+  padding: 2px 8px;
+  border-radius: 10px;
+  font-weight: 600;
+  color: #334155;
+}
+
+.model-picker-current .current-model {
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
 }
 
 .model-picker-buttons {
@@ -628,19 +674,61 @@ body,
 }
 
 .btn-model {
-  padding: 8px 16px;
+  padding: 8px 14px;
   border: none;
   border-radius: 8px;
   font-size: 0.85rem;
-  font-weight: 600;
   cursor: pointer;
   background: #f97316;
   color: #fff;
   transition: filter 0.15s;
+  text-align: left;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  max-width: 260px;
+}
+
+.model-picker.optional .btn-model {
+  background: #0ea5e9;
+}
+
+.model-picker.gated .btn-model {
+  background: #64748b;
+}
+
+.btn-model-proceed {
+  padding: 10px 16px;
+  border: none;
+  border-radius: 8px;
+  font-size: 0.9rem;
+  cursor: pointer;
+  background: #16a34a;
+  color: #fff;
+  transition: filter 0.15s;
+  text-align: left;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  max-width: 260px;
+}
+
+.btn-model-proceed:hover {
+  filter: brightness(0.9);
 }
 
 .btn-model:hover {
   filter: brightness(0.9);
+}
+
+.btn-model-name {
+  font-weight: 600;
+}
+
+.btn-model-notes {
+  font-size: 0.7rem;
+  opacity: 0.85;
+  font-weight: 400;
 }
 
 .btn-model-dismiss {

@@ -24,20 +24,22 @@ import (
 
 // Valid actions the frontend can send.
 const (
-	ActionNewQuestion   = "new_question"
-	ActionMoreHelp      = "more_help"
-	ActionShowSolution  = "show_solution"
-	ActionRetryModel    = "retry_model"
-	ActionSubmitAttempt = "submit_attempt"
-	ActionClose         = "close"
+	ActionNewQuestion    = "new_question"
+	ActionExtractProceed = "extract_proceed" // user confirmed extracted text, continue with validation + hint
+	ActionMoreHelp       = "more_help"
+	ActionShowSolution   = "show_solution"
+	ActionRetryModel     = "retry_model"
+	ActionSubmitAttempt  = "submit_attempt"
+	ActionClose          = "close"
 )
 
 // ChatRequest is the JSON body expected on POST /chat (application/json).
 type ChatRequest struct {
 	UserID    string    `json:"user_id" binding:"required"`
 	SessionID string    `json:"session_id" binding:"required"`
-	Action    string    `json:"action"` // new_question | more_help | show_solution | retry_model | close
-	Model     string    `json:"model"`  // for retry_model: the model to use
+	Action    string    `json:"action"`   // new_question | more_help | show_solution | retry_model | close
+	Model     string    `json:"model"`    // for retry_model: the model to use
+	Category  string    `json:"category"` // for retry_model: which category (Solver:LevelN | HintGenerator | Vision)
 	Message   ChatInput `json:"message"`
 }
 
@@ -54,6 +56,7 @@ type chatParsed struct {
 	SessionID string
 	Action    string // new_question | more_help | show_solution | retry_model | close
 	Model     string // for retry_model: the model to use
+	Category  string // for retry_model: which category to retry
 	Text      string
 	ImageURI  string // data URI or remote URL
 	ImageData []byte // raw bytes (only when file was uploaded)
@@ -156,6 +159,8 @@ func (h *ChatHandler) Handle(c *gin.Context) {
 			content = "[more_help]"
 		case ActionShowSolution:
 			content = "[show_solution]"
+		case ActionExtractProceed:
+			content = "[extract_proceed]"
 		case ActionRetryModel:
 			content = fmt.Sprintf("[retry_model:%s]", parsed.Model)
 		case ActionSubmitAttempt:
@@ -217,6 +222,9 @@ func (h *ChatHandler) Handle(c *gin.Context) {
 	}
 	if parsed.Model != "" {
 		metadata["model"] = parsed.Model
+	}
+	if parsed.Category != "" {
+		metadata["category"] = parsed.Category
 	}
 
 	task := &a2a.Task{
@@ -302,6 +310,7 @@ func (h *ChatHandler) parseRequest(c *gin.Context) (*chatParsed, error) {
 			SessionID: sessionID,
 			Action:    c.PostForm("action"),
 			Model:     c.PostForm("model"),
+			Category:  c.PostForm("category"),
 			Text:      text,
 		}
 
@@ -340,10 +349,10 @@ func (h *ChatHandler) parseRequest(c *gin.Context) (*chatParsed, error) {
 			parsed.ImageName = fileHeader.Filename
 		}
 
-		// For close/more_help/show_solution/retry_model actions, text is optional
+		// For close/more_help/show_solution/retry_model/extract_proceed actions, text is optional
 		if parsed.Text == "" && parsed.ImageURI == "" {
 			switch parsed.Action {
-			case ActionClose, ActionMoreHelp, ActionShowSolution, ActionRetryModel:
+			case ActionClose, ActionMoreHelp, ActionShowSolution, ActionRetryModel, ActionExtractProceed:
 				// No text needed — backend reads from DB
 			case ActionSubmitAttempt:
 				// submit_attempt needs text OR image (photo of handwritten work)
@@ -381,6 +390,7 @@ func (h *ChatHandler) parseRequest(c *gin.Context) (*chatParsed, error) {
 		SessionID: req.SessionID,
 		Action:    action,
 		Model:     req.Model,
+		Category:  req.Category,
 		Text:      req.Message.Text,
 		ImageURI:  req.Message.ImageURL,
 	}

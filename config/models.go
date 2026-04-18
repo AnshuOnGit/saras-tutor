@@ -1,5 +1,7 @@
 package config
 
+import "sort"
+
 // ModelCategory groups models by their role in the pipeline.
 type ModelCategory string
 
@@ -23,6 +25,18 @@ const (
 	CategoryRouter ModelCategory = "Router"
 )
 
+// AllCategories returns every category in display order (used by the UI picker).
+func AllCategories() []ModelCategory {
+	return []ModelCategory{
+		CategoryVision,
+		CategorySolverLevel1,
+		CategorySolverLevel2,
+		CategorySolverLevel3,
+		CategoryHintGenerator,
+		CategoryRouter,
+	}
+}
+
 // IsSolverCategory returns true if the category is any Solver sub-category.
 func IsSolverCategory(c ModelCategory) bool {
 	return c == CategorySolverLevel1 || c == CategorySolverLevel2 || c == CategorySolverLevel3
@@ -36,90 +50,261 @@ type ModelExpert struct {
 	// DisplayName is the human-friendly label shown in the frontend.
 	DisplayName string `json:"display_name"`
 
-	// Category indicates the model's role and strength.
+	// Category indicates the model's role.
 	Category ModelCategory `json:"category"`
 
-	// RecommendedDifficulty is 1-4 where:
-	//   1 = easy / recall (NCERT-level)
-	//   2 = moderate (JEE Main level)
-	//   3 = hard (JEE Advanced level)
-	//   4 = extreme (olympiad / multi-step proof)
-	RecommendedDifficulty int `json:"recommended_difficulty"`
+	// Priority: lower number = higher priority. 1 is the default pick for the category.
+	// The frontend lists models by ascending priority; ties are broken by registry order.
+	Priority int `json:"priority"`
 
-	// Recommended is true if this model is the default pick for its category.
-	Recommended bool `json:"recommended"`
+	// Notes is a short human-friendly hint about why/when to pick this model.
+	Notes string `json:"notes,omitempty"`
 }
 
-// ModelRegistry is the global ordered list of available models.
-// Order matters: first match in SelectModelForTask wins within a category.
+// ModelRegistry is the global catalogue of available models grouped by category.
+// Within a category, the model with the lowest Priority is the default.
+// To switch defaults, just reorder priorities — no code changes needed.
 var ModelRegistry = []ModelExpert{
-	// ── Vision ──
+	// ──────────────────────────────────────────────────────────────────
+	// Vision — image extraction (heavy VLM)
+	// ──────────────────────────────────────────────────────────────────
 	{
-		ID:                    "meta/llama-3.2-90b-vision-instruct",
-		DisplayName:           "Llama 3.2 90B Vision",
-		Category:              CategoryVision,
-		RecommendedDifficulty: 1,
-		Recommended:           true,
+		ID:          "meta/llama-3.2-90b-vision-instruct",
+		DisplayName: "Llama 3.2 90B Vision",
+		Category:    CategoryVision,
+		Priority:    1,
+		Notes:       "Strong OCR + diagram understanding. Default.",
+	},
+	{
+		ID:          "meta/llama-4-maverick-17b-128e-instruct",
+		DisplayName: "Llama 4 Maverick 17B",
+		Category:    CategoryVision,
+		Priority:    2,
+		Notes:       "Newer multimodal; faster, good for handwritten scans.",
+	},
+	{
+		ID:          "meta/llama-3.2-11b-vision-instruct",
+		DisplayName: "Llama 3.2 11B Vision",
+		Category:    CategoryVision,
+		Priority:    3,
+		Notes:       "Lightweight vision model — use when 90B is throttled.",
+	},
+	{
+		ID:          "nvidia/llama-3.1-nemotron-nano-vl-8b-v1",
+		DisplayName: "Nemotron Nano VL 8B",
+		Category:    CategoryVision,
+		Priority:    4,
+		Notes:       "Tiny VLM for low-latency simple images.",
+	},
+	{
+		ID:          "microsoft/phi-3.5-vision-instruct",
+		DisplayName: "Phi-3.5 Vision",
+		Category:    CategoryVision,
+		Priority:    5,
+		Notes:       "Compact Microsoft VLM.",
 	},
 
-	// ── Solver:Level2 (math / physics reasoning) ──
+	// ──────────────────────────────────────────────────────────────────
+	// Solver:Level1 — theory / general (biology, chemistry, NCERT recall)
+	// ──────────────────────────────────────────────────────────────────
+	// NOTE: mistral-small-3.1-24b-instruct-2503 removed — EOL 2026-04-15.
 	{
-		ID:                    "deepseek-ai/deepseek-r1-distill-qwen-32b",
-		DisplayName:           "DeepSeek-R1 Qwen 32B",
-		Category:              CategorySolverLevel2,
-		RecommendedDifficulty: 3,
-		Recommended:           true,
+		ID:          "google/gemma-3-27b-it",
+		DisplayName: "Gemma 3 27B",
+		Category:    CategorySolverLevel1,
+		Priority:    1,
+		Notes:       "Strong at structured explanations. Default.",
 	},
 	{
-		ID:                    "qwen/qwq-32b",
-		DisplayName:           "QwQ 32B",
-		Category:              CategorySolverLevel2,
-		RecommendedDifficulty: 2,
-		Recommended:           false,
+		ID:          "meta/llama-3.3-70b-instruct",
+		DisplayName: "Llama 3.3 70B",
+		Category:    CategorySolverLevel1,
+		Priority:    2,
+		Notes:       "Balanced general-purpose instruction model.",
 	},
-
-	// ── Solver:Level1 (theory / general) ──
 	{
-		ID:                    "mistralai/mistral-small-3.1-24b-instruct-2503",
-		DisplayName:           "Mistral Small 3.1 24B",
-		Category:              CategorySolverLevel1,
-		RecommendedDifficulty: 2,
-		Recommended:           true,
+		ID:          "mistralai/ministral-14b-instruct-2512",
+		DisplayName: "Ministral 14B",
+		Category:    CategorySolverLevel1,
+		Priority:    3,
+		Notes:       "Smaller & cheaper Mistral alternative.",
 	},
-
-	// ── Solver:Level3 (olympiad / extreme) ──
 	{
-		ID:                    "meta/llama-3.1-405b-instruct",
-		DisplayName:           "Llama 3.1 405B",
-		Category:              CategorySolverLevel3,
-		RecommendedDifficulty: 4,
-		Recommended:           true,
-	},
-
-	// ── HintGenerator (pedagogical hints at every level) ──
-	// Mistral Small follows hint constraints tightly (reasoning models like
-	// DeepSeek-R1 dump their full chain-of-thought and solve the problem).
-	{
-		ID:                    "mistralai/mistral-small-3.1-24b-instruct-2503",
-		DisplayName:           "Mistral Small 3.1 24B (Hint)",
-		Category:              CategoryHintGenerator,
-		RecommendedDifficulty: 2,
-		Recommended:           true,
+		ID:          "nvidia/llama-3.3-nemotron-super-49b-v1.5",
+		DisplayName: "Nemotron Super 49B v1.5",
+		Category:    CategorySolverLevel1,
+		Priority:    5,
+		Notes:       "Nemotron tuning on Llama 3.3.",
 	},
 
-	// ── Router (intent detection, NLP, validation, parsing, verification) ──
+	// ──────────────────────────────────────────────────────────────────
+	// Solver:Level2 — math / physics reasoning (JEE Main – Advanced)
+	// ──────────────────────────────────────────────────────────────────
+	// NOTE: deepseek-r1-distill-qwen-32b/14b, mathstral-7b-v0.1 and qwen/qwq-32b
+	// removed — all EOL 2026-04-15.
 	{
-		ID:                    "mistralai/mistral-small-3.1-24b-instruct-2503",
-		DisplayName:           "Mistral Small 3.1 24B (Router)",
-		Category:              CategoryRouter,
-		RecommendedDifficulty: 1,
-		Recommended:           true,
+		ID:          "qwen/qwen3-next-80b-a3b-thinking",
+		DisplayName: "Qwen3-Next 80B Thinking",
+		Category:    CategorySolverLevel2,
+		Priority:    1,
+		Notes:       "MoE reasoning model, long context. Default.",
+	},
+	{
+		ID:          "deepseek-ai/deepseek-v3.2",
+		DisplayName: "DeepSeek V3.2",
+		Category:    CategorySolverLevel2,
+		Priority:    2,
+		Notes:       "Non-reasoning but very capable.",
+	},
+	{
+		ID:          "moonshotai/kimi-k2-thinking",
+		DisplayName: "Kimi K2 Thinking",
+		Category:    CategorySolverLevel2,
+		Priority:    3,
+		Notes:       "Moonshot reasoning model.",
+	},
+	{
+		ID:          "mistralai/magistral-small-2506",
+		DisplayName: "Magistral Small",
+		Category:    CategorySolverLevel2,
+		Priority:    4,
+		Notes:       "Mistral's reasoning model.",
+	},
+
+	// ──────────────────────────────────────────────────────────────────
+	// Solver:Level3 — olympiad / multi-step proofs (extreme)
+	// ──────────────────────────────────────────────────────────────────
+	{
+		ID:          "meta/llama-3.1-405b-instruct",
+		DisplayName: "Llama 3.1 405B",
+		Category:    CategorySolverLevel3,
+		Priority:    1,
+		Notes:       "Top-tier breadth. Default.",
+	},
+	{
+		ID:          "mistralai/mistral-large-3-675b-instruct-2512",
+		DisplayName: "Mistral Large 3 675B",
+		Category:    CategorySolverLevel3,
+		Priority:    2,
+		Notes:       "Frontier-class Mistral model.",
+	},
+	{
+		ID:          "nvidia/llama-3.1-nemotron-ultra-253b-v1",
+		DisplayName: "Nemotron Ultra 253B",
+		Category:    CategorySolverLevel3,
+		Priority:    3,
+		Notes:       "NVIDIA's heavyweight reasoning model.",
+	},
+	{
+		ID:          "qwen/qwen3.5-397b-a17b",
+		DisplayName: "Qwen 3.5 397B",
+		Category:    CategorySolverLevel3,
+		Priority:    4,
+		Notes:       "MoE heavyweight, strong at math.",
+	},
+	{
+		ID:          "nvidia/nemotron-3-super-120b-a12b",
+		DisplayName: "Nemotron 3 Super 120B",
+		Category:    CategorySolverLevel3,
+		Priority:    5,
+		Notes:       "Alternative large MoE.",
+	},
+	{
+		ID:          "openai/gpt-oss-120b",
+		DisplayName: "GPT-OSS 120B",
+		Category:    CategorySolverLevel3,
+		Priority:    6,
+		Notes:       "OpenAI open-weights heavyweight.",
+	},
+
+	// ──────────────────────────────────────────────────────────────────
+	// HintGenerator — pedagogical hints (must NOT solve the problem)
+	// Use instruction-following models. Reasoning models (R1, QwQ) dump
+	// their chain-of-thought and give away the full solution.
+	// NOTE: mistral-small-3.1-24b-instruct-2503 removed — EOL 2026-04-15.
+	// ──────────────────────────────────────────────────────────────────
+	{
+		ID:          "google/gemma-3-27b-it",
+		DisplayName: "Gemma 3 27B",
+		Category:    CategoryHintGenerator,
+		Priority:    1,
+		Notes:       "Good pedagogical tone, respects 'do not solve'. Default.",
+	},
+	{
+		ID:          "meta/llama-3.3-70b-instruct",
+		DisplayName: "Llama 3.3 70B",
+		Category:    CategoryHintGenerator,
+		Priority:    2,
+		Notes:       "Reliable instruction following.",
+	},
+	{
+		ID:          "mistralai/ministral-14b-instruct-2512",
+		DisplayName: "Ministral 14B",
+		Category:    CategoryHintGenerator,
+		Priority:    3,
+		Notes:       "Cheaper hint generation.",
+	},
+	{
+		ID:          "microsoft/phi-4-mini-instruct",
+		DisplayName: "Phi-4 Mini",
+		Category:    CategoryHintGenerator,
+		Priority:    5,
+		Notes:       "Small and fast hint model.",
+	},
+
+	// ──────────────────────────────────────────────────────────────────
+	// Router — intent detection, validation, parsing, verification
+	// Fast & cheap, JSON-friendly instruction models.
+	// NOTE: mistral-small-3.1-24b-instruct-2503 removed — EOL 2026-04-15.
+	// ──────────────────────────────────────────────────────────────────
+	{
+		ID:          "meta/llama-3.3-70b-instruct",
+		DisplayName: "Llama 3.3 70B",
+		Category:    CategoryRouter,
+		Priority:    1,
+		Notes:       "Strong JSON output + validation. Default.",
+	},
+	{
+		ID:          "meta/llama-3.1-8b-instruct",
+		DisplayName: "Llama 3.1 8B",
+		Category:    CategoryRouter,
+		Priority:    2,
+		Notes:       "Very fast for simple classification.",
+	},
+	{
+		ID:          "google/gemma-3-27b-it",
+		DisplayName: "Gemma 3 27B",
+		Category:    CategoryRouter,
+		Priority:    3,
+		Notes:       "Structured output alternative.",
+	},
+	{
+		ID:          "google/gemma-3-4b-it",
+		DisplayName: "Gemma 3 4B",
+		Category:    CategoryRouter,
+		Priority:    4,
+		Notes:       "Tiny + cheap utility model.",
+	},
+	{
+		ID:          "nvidia/llama-3.1-nemotron-nano-8b-v1",
+		DisplayName: "Nemotron Nano 8B",
+		Category:    CategoryRouter,
+		Priority:    4,
+		Notes:       "NVIDIA fine-tune of Llama 8B.",
+	},
+	{
+		ID:          "microsoft/phi-4-mini-instruct",
+		DisplayName: "Phi-4 Mini",
+		Category:    CategoryRouter,
+		Priority:    5,
+		Notes:       "Microsoft's compact instruction model.",
 	},
 }
 
 // ── Lookup helpers ───────────────────────────────────────────────────
 
-// GetModelsByCategory returns all models belonging to the given category.
+// GetModelsByCategory returns all models in a category, sorted by priority
+// ascending (highest-priority/default model first).
 func GetModelsByCategory(category ModelCategory) []ModelExpert {
 	var out []ModelExpert
 	for _, m := range ModelRegistry {
@@ -127,10 +312,12 @@ func GetModelsByCategory(category ModelCategory) []ModelExpert {
 			out = append(out, m)
 		}
 	}
+	sort.SliceStable(out, func(i, j int) bool { return out[i].Priority < out[j].Priority })
 	return out
 }
 
-// GetAllSolverModels returns models from all Solver sub-categories.
+// GetAllSolverModels returns models from all Solver sub-categories,
+// sorted by (category, priority).
 func GetAllSolverModels() []ModelExpert {
 	var out []ModelExpert
 	for _, m := range ModelRegistry {
@@ -138,10 +325,19 @@ func GetAllSolverModels() []ModelExpert {
 			out = append(out, m)
 		}
 	}
+	sort.SliceStable(out, func(i, j int) bool {
+		if out[i].Category != out[j].Category {
+			return out[i].Category < out[j].Category
+		}
+		return out[i].Priority < out[j].Priority
+	})
 	return out
 }
 
-// GetModelByID returns a model by its NVIDIA NIM ID, or nil if not found.
+// GetModelByID returns the first model matching the given NVIDIA NIM ID, or
+// nil if not found. Note: some IDs (e.g. Mistral Small) appear in multiple
+// categories — this returns the first match in registry order. For category-
+// specific lookup, use ResolveModelForCategory.
 func GetModelByID(id string) *ModelExpert {
 	for i := range ModelRegistry {
 		if ModelRegistry[i].ID == id {
@@ -151,14 +347,52 @@ func GetModelByID(id string) *ModelExpert {
 	return nil
 }
 
-// GetRecommended returns the first recommended model for a category.
-func GetRecommended(category ModelCategory) *ModelExpert {
+// GetDefault returns the highest-priority (lowest-Priority-number) model
+// for a category, or nil if the category has no entries.
+func GetDefault(category ModelCategory) *ModelExpert {
+	var best *ModelExpert
 	for i := range ModelRegistry {
-		if ModelRegistry[i].Category == category && ModelRegistry[i].Recommended {
-			return &ModelRegistry[i]
+		m := &ModelRegistry[i]
+		if m.Category != category {
+			continue
+		}
+		if best == nil || m.Priority < best.Priority {
+			best = m
 		}
 	}
-	return nil
+	return best
+}
+
+// GetRecommended is an alias for GetDefault, kept for backward compatibility.
+func GetRecommended(category ModelCategory) *ModelExpert {
+	return GetDefault(category)
+}
+
+// CategoryListing groups models by category for UI pickers.
+type CategoryListing struct {
+	Category ModelCategory `json:"category"`
+	Default  string        `json:"default"` // ID of the highest-priority model
+	Models   []ModelExpert `json:"models"`  // all models in this category, sorted by priority
+}
+
+// ListByCategory returns every category with its models sorted by priority.
+// Use this to render a per-category picker in the frontend.
+func ListByCategory() []CategoryListing {
+	cats := AllCategories()
+	out := make([]CategoryListing, 0, len(cats))
+	for _, cat := range cats {
+		models := GetModelsByCategory(cat)
+		def := ""
+		if len(models) > 0 {
+			def = models[0].ID
+		}
+		out = append(out, CategoryListing{
+			Category: cat,
+			Default:  def,
+			Models:   models,
+		})
+	}
+	return out
 }
 
 // ── Task-based selection ─────────────────────────────────────────────
@@ -168,40 +402,38 @@ func GetRecommended(category ModelCategory) *ModelExpert {
 //
 // Logic:
 //
-//	isVision                 → Vision model
-//	difficulty >= 4          → Solver:Level3 (405B)
-//	difficulty >= 3          → Solver:Level2 recommended (DeepSeek-R1)
-//	subject is biology/chem  → Solver:Level1 (Mistral Small)
-//	default                  → Solver:Level2 recommended
+//	isVision                 → Vision default
+//	difficulty >= 4          → Solver:Level3 default
+//	difficulty >= 3          → Solver:Level2 default
+//	subject is biology/chem  → Solver:Level1 default
+//	default                  → Solver:Level2 default
 func SelectModelForTask(difficulty int, subject string, isVision bool) string {
 	if isVision {
-		if m := GetRecommended(CategoryVision); m != nil {
+		if m := GetDefault(CategoryVision); m != nil {
 			return m.ID
 		}
 	}
 
 	if difficulty >= 4 {
-		if m := GetRecommended(CategorySolverLevel3); m != nil {
+		if m := GetDefault(CategorySolverLevel3); m != nil {
 			return m.ID
 		}
 	}
 
 	if difficulty >= 3 {
-		if m := GetRecommended(CategorySolverLevel2); m != nil {
+		if m := GetDefault(CategorySolverLevel2); m != nil {
 			return m.ID
 		}
 	}
 
-	// Theory subjects prefer the Level1 solver
 	switch subject {
 	case "biology", "Biology", "chemistry", "Chemistry":
-		if m := GetRecommended(CategorySolverLevel1); m != nil {
+		if m := GetDefault(CategorySolverLevel1); m != nil {
 			return m.ID
 		}
 	}
 
-	// Default: Level2 solver
-	if m := GetRecommended(CategorySolverLevel2); m != nil {
+	if m := GetDefault(CategorySolverLevel2); m != nil {
 		return m.ID
 	}
 	return ModelRegistry[0].ID
@@ -209,49 +441,69 @@ func SelectModelForTask(difficulty int, subject string, isVision bool) string {
 
 // ── Default model accessors (used at startup to build LLM clients) ───
 
-// DefaultVisionModel returns the recommended vision model ID.
+// DefaultVisionModel returns the highest-priority vision model ID.
 func DefaultVisionModel() string {
-	if m := GetRecommended(CategoryVision); m != nil {
+	if m := GetDefault(CategoryVision); m != nil {
 		return m.ID
 	}
 	return "meta/llama-3.2-90b-vision-instruct"
 }
 
-// DefaultSolverModel returns the recommended Level2 solver model ID.
+// DefaultSolverModel returns the highest-priority Solver:Level2 model ID.
 // Used for solution agents at startup.
 func DefaultSolverModel() string {
-	if m := GetRecommended(CategorySolverLevel2); m != nil {
+	if m := GetDefault(CategorySolverLevel2); m != nil {
 		return m.ID
 	}
-	return "deepseek-ai/deepseek-r1-distill-qwen-32b"
+	return "qwen/qwen3-next-80b-a3b-thinking"
 }
 
-// DefaultHintModel returns the recommended model for hint generation.
+// DefaultHintModel returns the highest-priority HintGenerator model ID.
 // Uses an instruction-following model (not a reasoning model) so hints
 // stay concise and don't dump full solutions.
 func DefaultHintModel() string {
-	if m := GetRecommended(CategoryHintGenerator); m != nil {
+	if m := GetDefault(CategoryHintGenerator); m != nil {
 		return m.ID
 	}
-	return "mistralai/mistral-small-3.1-24b-instruct-2503"
+	return "google/gemma-3-27b-it"
 }
 
-// DefaultRouterModel returns the lightweight model for intent detection,
-// validation, parsing, and verification.
+// DefaultRouterModel returns the highest-priority Router model ID
+// for validation, parsing, and verification.
 func DefaultRouterModel() string {
-	if m := GetRecommended(CategoryRouter); m != nil {
+	if m := GetDefault(CategoryRouter); m != nil {
 		return m.ID
 	}
-	return "mistralai/mistral-small-3.1-24b-instruct-2503"
+	return "meta/llama-3.3-70b-instruct"
 }
 
-// RetryModelIDs returns the IDs of all solver models for the retry picker.
+// RetryModelIDs returns the IDs of all solver models (all 3 levels),
+// sorted by (category, priority), for the retry picker.
 func RetryModelIDs() []string {
-	var ids []string
-	for _, m := range ModelRegistry {
-		if IsSolverCategory(m.Category) {
-			ids = append(ids, m.ID)
-		}
+	models := GetAllSolverModels()
+	ids := make([]string, 0, len(models))
+	for _, m := range models {
+		ids = append(ids, m.ID)
 	}
 	return ids
+}
+
+// ResolveModelForCategory returns a model ID to use for the given category.
+// If preferred is non-empty AND exists in the registry AND belongs to the
+// category, it is returned as-is. Otherwise the category default is used.
+// This is the recommended entry point when the frontend passes a user-picked
+// model that needs validation against a specific role.
+func ResolveModelForCategory(category ModelCategory, preferred string) string {
+	if preferred != "" {
+		for i := range ModelRegistry {
+			m := &ModelRegistry[i]
+			if m.ID == preferred && m.Category == category {
+				return m.ID
+			}
+		}
+	}
+	if m := GetDefault(category); m != nil {
+		return m.ID
+	}
+	return ""
 }

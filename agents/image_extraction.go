@@ -80,7 +80,12 @@ EXTRACTION RULES:
 4. NEVER use \( \) or \[ \] delimiters.
 5. For diagrams/figures: describe under "## Diagram" with all labels, vertices, segments, angles, and measurements visible.
 6. For tables: use Markdown tables.
-7. Do NOT solve, explain, or interpret. Only extract.
+7. Do NOT solve, explain, interpret, attempt, or comment on the question.
+   ❌ NEVER write "Solution", "Answer", "Therefore", "We can see that", "Let us solve", or anything similar.
+   ❌ NEVER write meta-notes like "No diagram is provided", "No solution is provided",
+      "The question is incomplete", "Cannot be determined", or any judgement about the question.
+   ❌ If there is no diagram in the image, simply OMIT the "## Diagram" section — do not announce its absence.
+   ✅ Output ONLY what literally appears in the image, transcribed faithfully.
 8. Keep output concise — no preamble like "The problem statement is" or "The extracted content is".
 
 DOUBLE-CHECK PASS — re-examine the image carefully:

@@ -247,6 +247,81 @@ func (s *Store) UpdateInteraction(ctx context.Context, id string, state models.I
 	return nil
 }
 
+// UpdateInteractionQuestion overwrites the stored question text, used when the
+// user regenerates extraction with a different vision model.
+func (s *Store) UpdateInteractionQuestion(ctx context.Context, id, questionText string) error {
+	_, err := s.pool.Exec(ctx,
+		`UPDATE interactions SET question_text = $1, updated_at = now() WHERE id = $2`,
+		questionText, id,
+	)
+	if err != nil {
+		return fmt.Errorf("update interaction question: %w", err)
+	}
+	return nil
+}
+
+// EnrichInteraction writes the post-validation taxonomy + difficulty + state
+// onto an existing row and refreshes the topic links.
+func (s *Store) EnrichInteraction(ctx context.Context, i *models.Interaction) error {
+	_, err := s.pool.Exec(ctx,
+		`UPDATE interactions
+		 SET question_text = $1, subject_id = $2, difficulty = $3, problem_text = $4, state = $5, hint_level = $6, updated_at = now()
+		 WHERE id = $7`,
+		i.QuestionText, i.SubjectID, i.Difficulty, i.ProblemText, i.State, i.HintLevel, i.ID,
+	)
+	if err != nil {
+		return fmt.Errorf("enrich interaction: %w", err)
+	}
+	// Replace topic links
+	if _, err := s.pool.Exec(ctx, `DELETE FROM interaction_topics WHERE interaction_id = $1`, i.ID); err != nil {
+		return fmt.Errorf("clear interaction_topics: %w", err)
+	}
+	for _, topicID := range i.TopicIDs {
+		if _, err := s.pool.Exec(ctx,
+			`INSERT INTO interaction_topics (interaction_id, topic_id, confidence) VALUES ($1, $2, 1.0)
+			 ON CONFLICT (interaction_id, topic_id) DO NOTHING`,
+			i.ID, topicID,
+		); err != nil {
+			return fmt.Errorf("insert interaction_topic: %w", err)
+		}
+	}
+	return nil
+}
+
+// GetInteractionByID loads an interaction (plus topic links) by primary key.
+func (s *Store) GetInteractionByID(ctx context.Context, id string) (*models.Interaction, error) {
+	row := s.pool.QueryRow(ctx,
+		`SELECT id, conversation_id, question_text, image_id, subject_id, difficulty, problem_text, state, hint_level, exit_reason, created_at, updated_at
+		 FROM interactions WHERE id = $1`,
+		id,
+	)
+	var i models.Interaction
+	var exitReason *string
+	if err := row.Scan(&i.ID, &i.ConversationID, &i.QuestionText, &i.ImageID, &i.SubjectID, &i.Difficulty, &i.ProblemText, &i.State, &i.HintLevel, &exitReason, &i.CreatedAt, &i.UpdatedAt); err != nil {
+		if err == pgx.ErrNoRows {
+			return nil, nil
+		}
+		return nil, fmt.Errorf("get interaction: %w", err)
+	}
+	if exitReason != nil {
+		er := models.ExitReason(*exitReason)
+		i.ExitReason = &er
+	}
+	rows, err := s.pool.Query(ctx,
+		`SELECT topic_id FROM interaction_topics WHERE interaction_id = $1`, i.ID,
+	)
+	if err == nil {
+		defer rows.Close()
+		for rows.Next() {
+			var tid int64
+			if err := rows.Scan(&tid); err == nil {
+				i.TopicIDs = append(i.TopicIDs, tid)
+			}
+		}
+	}
+	return &i, nil
+}
+
 // CloseInteraction marks an interaction as terminal with an exit reason.
 func (s *Store) CloseInteraction(ctx context.Context, id string, state models.InteractionState, reason models.ExitReason) error {
 	_, err := s.pool.Exec(ctx,

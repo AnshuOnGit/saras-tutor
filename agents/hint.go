@@ -44,88 +44,48 @@ func (a *HintAgent) Card() a2a.AgentCard {
 	}
 }
 
-// --- Hint prompts by level ---
+// --- Single unified hint prompt ---
+//
+// Previously there were three separate prompts for Level1/2/3. That model has
+// been removed: every hint call uses the same prompt and is made slightly more
+// revealing by passing the hint_count (how many hints have already been given
+// for this question). The prompt explicitly asks the model to go deeper than
+// the previous hints without solving the problem.
 
-const hintLevel1Prompt = `You are a supportive tutor helping a JEE/NEET student. The student has asked about a problem.
+const hintUnifiedPrompt = `You are a supportive tutor helping a JEE/NEET student. The student is stuck on a problem and has asked for help.
 
-YOUR ROLE: Give a **Level 1 hint** — a gentle nudge to help them think in the right direction.
+INTERNAL CONTEXT (do NOT mention this in your reply):
+- This is the %dᵗʰ hint that has been generated for this question.
+- Each subsequent hint should be slightly MORE revealing than the previous one, WITHOUT ever giving the final numerical answer.
 
-STRICT RULES:
-- Identify the relevant topic and ONE key concept or formula needed.
-- Ask the student a guiding question that leads them toward the approach.
-- Do NOT show ANY calculations, steps, substitutions, or intermediate results.
-- Do NOT solve the problem — not even partially.
-- Do NOT expand series, evaluate integrals, or simplify expressions.
-- MAXIMUM 3-5 sentences. If your response exceeds 100 words, you have said too much.
-- End with an encouraging question like "Can you try applying this?" or "What do you get when you use this formula?"
+DEPTH GUIDELINES (based on hint number, but NEVER state the number):
+- 1st hint: Identify ONE relevant concept/formula. Ask a guiding question. No calculations.
+- 2nd hint: Name the method. Show setup / first step only. No final answer.
+- 3rd hint: Walk through most steps. Stop before the final computation.
+- 4th hint or later: Show everything except the last arithmetic step. Leave the final number for the student.
 
-FORMATTING:
-- Use Markdown with $ and $$ for math (NEVER \( \) or \[ \]).
-- Bold key terms.
-
-QUESTION:
-%s
-
-CRITICAL: Your ENTIRE response must be under 100 words. You are helping them THINK, not solving for them. If you catch yourself writing a solution, STOP immediately.`
-
-const hintLevel2Prompt = `You are a supportive tutor helping a JEE/NEET student. They've already received a gentle hint but need more help.
-
-YOUR ROLE: Give a **Level 2 hint** — outline the approach and show the first step only.
-
-STRICT RULES:
-- Name the specific method/technique to use.
-- Show ONLY the first 1-2 steps (setup/identification only).
-- Do NOT carry out the full calculation.
-- Do NOT reveal intermediate or final answers.
-- Do NOT solve more than the first step.
-- MAXIMUM 150 words.
-- Ask them to complete the next step.
-
-FORMATTING:
-- Use Markdown with $ and $$ for math (NEVER \( \) or \[ \]).
-- Use numbered steps.
-- Bold key results.
+STRICT RULES (apply to every hint):
+- NEVER reveal the final numerical answer.
+- NEVER carry out ALL steps — always leave the last calculation for the student.
+- NEVER write headings like "Hint #1:", "Hint 2:", "First hint:", or any label that announces the hint number. Just give the hint directly.
+- NEVER write meta-greetings like "Hi there!", "Great question!", "Let me help you with this". Start straight with the substance.
+- Be encouraging in tone, end with a question or call-to-action.
+- Use Markdown with $ and $$ for math (NEVER \\( \\) or \\[ \\]).
+- Keep it under ~250 words.
 
 QUESTION:
 %s
 
-CRITICAL: Stop after showing the setup. Do NOT continue into the solution. Show just enough to unblock them — nothing more.`
+CRITICAL: Stop once you've helped enough for this hint number. Do NOT solve the problem.`
 
-const hintLevel3Prompt = `You are a supportive tutor helping a JEE/NEET student. They've asked for more help after two hints.
-
-YOUR ROLE: Give a **Level 3 hint** — a detailed walkthrough with most steps, but leave the final answer for the student.
-
-STRICT RULES:
-- Walk through the solution method step by step.
-- Show all the working EXCEPT the final calculation/answer.
-- STOP before computing the final numerical answer.
-- Leave the last step for the student to complete.
-- Clearly tell them what final step they need to do.
-- Do NOT state the answer — let them compute it.
-- Be encouraging.
-
-FORMATTING:
-- Use Markdown with $ and $$ for math (NEVER \( \) or \[ \]).
-- Use numbered steps with headings.
-- Bold the final instruction.
-
-QUESTION:
-%s
-
-CRITICAL: Do NOT reveal the final answer. They're almost there — give them the satisfaction of finishing it.`
-
-// GetPromptForLevel returns the appropriate system prompt for the given hint level.
+// GetPromptForLevel returns the unified hint prompt. The level parameter is
+// kept for backward compatibility with older call sites — it is now used only
+// as the hint count baked into the prompt template.
 func GetPromptForLevel(level HintLevel) string {
-	switch level {
-	case HintLevel1:
-		return hintLevel1Prompt
-	case HintLevel2:
-		return hintLevel2Prompt
-	case HintLevel3:
-		return hintLevel3Prompt
-	default:
-		return "" // Level 4 = full solution, handled by solver
+	if level <= 0 {
+		level = HintLevel1
 	}
+	return fmt.Sprintf(hintUnifiedPrompt, int(level), "%s")
 }
 
 // Handle processes a hint task synchronously.
@@ -142,11 +102,6 @@ func (a *HintAgent) Handle(ctx context.Context, task *a2a.Task) (*a2a.Task, erro
 	question := strings.Join(parts, "\n")
 
 	prompt := GetPromptForLevel(level)
-	if prompt == "" {
-		// Level 4 = full solution — this shouldn't reach hint agent
-		task.State = a2a.TaskStateFailed
-		return task, fmt.Errorf("hint level %d should be handled by solver", level)
-	}
 
 	messages := []llm.ChatMessage{
 		{Role: "user", Content: fmt.Sprintf(prompt, question)},
@@ -202,10 +157,6 @@ func (a *HintAgent) HandleStream(ctx context.Context, task *a2a.Task, out chan<-
 	question := strings.Join(textParts, "\n")
 
 	prompt := GetPromptForLevel(level)
-	if prompt == "" {
-		out <- a2a.StreamEvent{Type: "error", Error: "invalid hint level for hint agent"}
-		return
-	}
 
 	// Hints always work from extracted text — images are consumed only
 	// by the image_extraction agent.
@@ -253,19 +204,16 @@ func (a *HintAgent) HandleStream(ctx context.Context, task *a2a.Task, out chan<-
 	}
 }
 
-// parseHintLevel reads the hint level from task metadata.
+// parseHintLevel reads the hint level from task metadata. Any positive
+// integer is accepted — higher numbers produce progressively more revealing
+// hints (guided by the unified prompt).
 func parseHintLevel(metadata map[string]string) HintLevel {
 	if metadata == nil {
 		return HintLevel1
 	}
-	switch metadata["hint_level"] {
-	case "2":
-		return HintLevel2
-	case "3":
-		return HintLevel3
-	case "4":
-		return HintLevelSolution
-	default:
-		return HintLevel1
+	var n int
+	if _, err := fmt.Sscanf(metadata["hint_level"], "%d", &n); err == nil && n > 0 {
+		return HintLevel(n)
 	}
+	return HintLevel1
 }

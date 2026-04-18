@@ -172,9 +172,17 @@ export default function App() {
           // Try to detect hint metadata (JSON with hint_level)
           try {
             const meta = JSON.parse(rawText);
-            if (meta.model_picker && meta.models) {
-              // Verifier failed — show model picker
-              setPendingModelPicker({ models: meta.models });
+            if (meta.model_picker && (meta.models || meta.proceed_action)) {
+              // Solver / hint / vision / evaluator offered alternatives
+              setPendingModelPicker({
+                models: meta.models || [],
+                category: meta.category || "",
+                current: meta.current || "",
+                optional: meta.optional === true,
+                reason: meta.reason || "",
+                proceedAction: meta.proceed_action || "",
+                interactionId: meta.interaction_id || "",
+              });
             } else if (meta.attempt_evaluated) {
               // Attempt was evaluated but not fully correct — re-show hint actions
               setPendingHint({
@@ -246,26 +254,31 @@ export default function App() {
   }
 
   // Model picker handlers
-  function handlePickModel(model) {
+  function handlePickModel(model, category) {
     setPendingModelPicker(null);
-    // Send retry_model action — sendMessage signature is (text, imageFile, action)
-    // We need to pass the model name. We'll extend the fetch call.
-    sendRetryModel(model);
+    sendRetryModel(model, category);
   }
 
   function handleDismissModelPicker() {
     setPendingModelPicker(null);
   }
 
+  // Primary "Proceed" button on a gated picker (e.g. extract_proceed).
+  // Dispatches the named action with no model override, continuing the flow.
+  function handleProceedModelPicker(action) {
+    setPendingModelPicker(null);
+    sendMessage("", null, action);
+  }
+
   // Send a retry_model request with the selected model
   const sendRetryModel = useCallback(
-    async (model) => {
+    async (model, category) => {
       setMessages((prev) => [
         ...prev,
         {
           id: crypto.randomUUID(),
           role: "user",
-          text: `Retry with model: ${model}`,
+          text: `Retry with model: ${model}${category ? ` (${category})` : ""}`,
         },
       ]);
       setStreaming(true);
@@ -276,6 +289,7 @@ export default function App() {
         session_id: sessionId,
         action: "retry_model",
         model: model,
+        category: category || "",
         message: { content_type: "text", text: "" },
       });
 
@@ -376,8 +390,6 @@ export default function App() {
         ))}
         {pendingHint && !streaming && (
           <HintActions
-            hintLevel={pendingHint.hintLevel}
-            onMoreHelp={handleMoreHelp}
             onShowSolution={handleShowSolution}
             onDismiss={handleDismissHint}
           />
@@ -385,7 +397,13 @@ export default function App() {
         {pendingModelPicker && !streaming && (
           <ModelPicker
             models={pendingModelPicker.models}
+            category={pendingModelPicker.category}
+            current={pendingModelPicker.current}
+            optional={pendingModelPicker.optional}
+            reason={pendingModelPicker.reason}
+            proceedAction={pendingModelPicker.proceedAction}
             onPickModel={handlePickModel}
+            onProceed={handleProceedModelPicker}
             onDismiss={handleDismissModelPicker}
           />
         )}
@@ -407,7 +425,16 @@ export default function App() {
             sendMessage(text, imageFile);
           }
         }}
-        disabled={streaming || !!pendingModelPicker}
+        // Disable typing only while streaming or while a GATED picker (e.g.
+        // the extraction confirmation) is pending. Optional pickers — the
+        // "Not satisfied? Try another model" bar — leave input enabled so the
+        // student can still type an attempt.
+        disabled={
+          streaming ||
+          (!!pendingModelPicker &&
+            (pendingModelPicker.proceedAction ||
+              pendingModelPicker.optional === false))
+        }
         placeholder={pendingHint ? "Type your attempt or attach a photo of your work…" : undefined}
       />
     </div>

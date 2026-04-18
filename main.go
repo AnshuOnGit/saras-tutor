@@ -57,6 +57,9 @@ func main() {
 	chatHandler := handler.NewChatHandler(cfg, pool)
 	r.POST("/chat", chatHandler.Handle)
 
+	// Model catalogue — lists all experts grouped by category (for UI pickers)
+	r.GET("/api/v1/experts", handler.ExpertsHandler)
+
 	port := cfg.Port
 	if port == "" {
 		port = "8080"

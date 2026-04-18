@@ -20,6 +20,7 @@ type InteractionState string
 
 const (
 	InteractionNew               InteractionState = "new"
+	InteractionExtracting        InteractionState = "extracting" // awaiting user confirmation of extracted text
 	InteractionHint1             InteractionState = "hint_1"
 	InteractionHint2             InteractionState = "hint_2"
 	InteractionHint3             InteractionState = "hint_3"

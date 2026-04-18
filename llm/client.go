@@ -133,6 +133,58 @@ type streamChunk struct {
 	Usage *Usage `json:"usage,omitempty"`
 }
 
+// summarizeMessages renders chat messages into a compact, log-safe form
+// (truncating long text and replacing image data URIs with their byte size).
+// Used by Complete / StreamComplete so the operator can verify exactly what
+// prompt was sent to the LLM.
+func summarizeMessages(messages []ChatMessage) []map[string]string {
+	const maxTextLen = 2000
+	out := make([]map[string]string, 0, len(messages))
+	for i, m := range messages {
+		entry := map[string]string{
+			"i":    fmt.Sprintf("%d", i),
+			"role": m.Role,
+		}
+		switch v := m.Content.(type) {
+		case string:
+			entry["text"] = truncate(v, maxTextLen)
+			entry["len"] = fmt.Sprintf("%d", len(v))
+		case []ContentPart:
+			var parts []string
+			for _, p := range v {
+				switch p.Type {
+				case "text":
+					parts = append(parts, fmt.Sprintf("text(%d): %s", len(p.Text), truncate(p.Text, maxTextLen)))
+				case "image_url":
+					url := ""
+					if p.ImageURL != nil {
+						url = p.ImageURL.URL
+					}
+					if strings.HasPrefix(url, "data:") {
+						parts = append(parts, fmt.Sprintf("image[data-uri %d bytes]", len(url)))
+					} else {
+						parts = append(parts, fmt.Sprintf("image[url=%s]", truncate(url, 200)))
+					}
+				default:
+					parts = append(parts, fmt.Sprintf("%s[?]", p.Type))
+				}
+			}
+			entry["parts"] = strings.Join(parts, " | ")
+		default:
+			entry["content"] = fmt.Sprintf("%T", v)
+		}
+		out = append(out, entry)
+	}
+	return out
+}
+
+func truncate(s string, n int) string {
+	if len(s) <= n {
+		return s
+	}
+	return s[:n] + fmt.Sprintf("…[+%d chars]", len(s)-n)
+}
+
 // --- public API ---
 
 // Complete sends a non-streaming chat completion and returns the full response
@@ -152,7 +204,8 @@ func (c *Client) Complete(ctx context.Context, messages []ChatMessage) (*Complet
 		"base_url", c.BaseURL,
 		"body_bytes", len(body),
 		"max_tokens", c.MaxTokens,
-		"msg_count", len(messages))
+		"msg_count", len(messages),
+		"messages", summarizeMessages(messages))
 
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.BaseURL+"/chat/completions", bytes.NewReader(body))
 	if err != nil {
@@ -201,6 +254,7 @@ func (c *Client) Complete(ctx context.Context, messages []ChatMessage) (*Complet
 		"completion_tokens", cr.Usage.CompletionTokens,
 		"total_tokens", cr.Usage.TotalTokens,
 		"response_len", len(content),
+		"response", truncate(content, 4000),
 		"total_elapsed_ms", httpDuration.Milliseconds())
 	return &CompletionResult{
 		Content: content,
@@ -229,6 +283,13 @@ const maxStreamRetries = 2
 // produces 0 tokens (a common transient failure on NVIDIA NIM), the request
 // is retried up to maxStreamRetries times with a short back-off.
 func (c *Client) StreamComplete(ctx context.Context, messages []ChatMessage, onToken func(token string) error) (*StreamResult, error) {
+	slog.Info("llm: stream request prompt",
+		"model", c.Model,
+		"base_url", c.BaseURL,
+		"max_tokens", c.MaxTokens,
+		"msg_count", len(messages),
+		"messages", summarizeMessages(messages))
+
 	body, _ := json.Marshal(chatRequest{
 		Model:     c.Model,
 		Messages:  messages,
@@ -395,6 +456,7 @@ func (c *Client) doStreamRequest(ctx context.Context, body []byte, attempt int, 
 		"completion_tokens", usage.CompletionTokens,
 		"total_tokens", usage.TotalTokens,
 		"response_len", full.Len(),
+		"response", truncate(full.String(), 4000),
 		"token_chunks", tokenCount,
 		"total_elapsed_ms", elapsed.Milliseconds(),
 		"total_elapsed_s", fmt.Sprintf("%.1f", elapsed.Seconds()))
