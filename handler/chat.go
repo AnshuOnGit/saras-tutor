@@ -35,12 +35,13 @@ const (
 
 // ChatRequest is the JSON body expected on POST /chat (application/json).
 type ChatRequest struct {
-	UserID    string    `json:"user_id" binding:"required"`
-	SessionID string    `json:"session_id" binding:"required"`
-	Action    string    `json:"action"`   // new_question | more_help | show_solution | retry_model | close
-	Model     string    `json:"model"`    // for retry_model: the model to use
-	Category  string    `json:"category"` // for retry_model: which category (Solver:LevelN | HintGenerator | Vision)
-	Message   ChatInput `json:"message"`
+	UserID        string    `json:"user_id" binding:"required"`
+	SessionID     string    `json:"session_id" binding:"required"`
+	Action        string    `json:"action"`         // new_question | more_help | show_solution | retry_model | close
+	Model         string    `json:"model"`          // for retry_model: the model to use
+	Category      string    `json:"category"`       // for retry_model: which category (Solver:LevelN | HintGenerator | Vision)
+	InteractionID string    `json:"interaction_id"` // for retry_model: the interaction being retried (survives state changes)
+	Message       ChatInput `json:"message"`
 }
 
 // ChatInput represents the user's input content.
@@ -52,16 +53,17 @@ type ChatInput struct {
 
 // chatParsed is the normalised input regardless of content-type.
 type chatParsed struct {
-	UserID    string
-	SessionID string
-	Action    string // new_question | more_help | show_solution | retry_model | close
-	Model     string // for retry_model: the model to use
-	Category  string // for retry_model: which category to retry
-	Text      string
-	ImageURI  string // data URI or remote URL
-	ImageData []byte // raw bytes (only when file was uploaded)
-	ImageMime string
-	ImageName string
+	UserID        string
+	SessionID     string
+	Action        string // new_question | more_help | show_solution | retry_model | close
+	Model         string // for retry_model: the model to use
+	Category      string // for retry_model: which category to retry
+	InteractionID string // for retry_model: which interaction to operate on
+	Text          string
+	ImageURI      string // data URI or remote URL
+	ImageData     []byte // raw bytes (only when file was uploaded)
+	ImageMime     string
+	ImageName     string
 }
 
 // ChatHandler serves the POST /chat endpoint with SSE streaming.
@@ -226,6 +228,9 @@ func (h *ChatHandler) Handle(c *gin.Context) {
 	if parsed.Category != "" {
 		metadata["category"] = parsed.Category
 	}
+	if parsed.InteractionID != "" {
+		metadata["interaction_id"] = parsed.InteractionID
+	}
 
 	task := &a2a.Task{
 		ID:        uuid.New().String(),
@@ -306,12 +311,13 @@ func (h *ChatHandler) parseRequest(c *gin.Context) (*chatParsed, error) {
 		}
 
 		parsed := &chatParsed{
-			UserID:    userID,
-			SessionID: sessionID,
-			Action:    c.PostForm("action"),
-			Model:     c.PostForm("model"),
-			Category:  c.PostForm("category"),
-			Text:      text,
+			UserID:        userID,
+			SessionID:     sessionID,
+			Action:        c.PostForm("action"),
+			Model:         c.PostForm("model"),
+			Category:      c.PostForm("category"),
+			InteractionID: c.PostForm("interaction_id"),
+			Text:          text,
 		}
 
 		// Check for uploaded image
@@ -386,13 +392,14 @@ func (h *ChatHandler) parseRequest(c *gin.Context) (*chatParsed, error) {
 	}
 
 	parsed := &chatParsed{
-		UserID:    req.UserID,
-		SessionID: req.SessionID,
-		Action:    action,
-		Model:     req.Model,
-		Category:  req.Category,
-		Text:      req.Message.Text,
-		ImageURI:  req.Message.ImageURL,
+		UserID:        req.UserID,
+		SessionID:     req.SessionID,
+		Action:        action,
+		Model:         req.Model,
+		Category:      req.Category,
+		InteractionID: req.InteractionID,
+		Text:          req.Message.Text,
+		ImageURI:      req.Message.ImageURL,
 	}
 	return parsed, nil
 }

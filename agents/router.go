@@ -1120,9 +1120,24 @@ func (r *Router) emitPickerPayload(
 // default to the solver category for backwards compatibility with the
 // original verifier-failure flow.
 func (r *Router) handleRetryModel(ctx context.Context, task *a2a.Task, convID, userID string, out chan<- a2a.StreamEvent) {
-	interaction, err := r.store.GetActiveInteraction(ctx, convID)
-	if err != nil || interaction == nil {
-		slog.Info("router: no active interaction for retry_model, treating as new question")
+	// 1. Prefer the interaction_id echoed back by the frontend's picker
+	//    payload — that is the exact interaction this retry click targets,
+	//    regardless of whether its state is still "active". This is critical
+	//    because the OPTIONAL post-success picker references an already-solved
+	//    interaction that GetActiveInteraction would skip.
+	var interaction *models.Interaction
+	if task.Metadata != nil {
+		if iid := task.Metadata["interaction_id"]; iid != "" {
+			interaction, _ = r.store.GetInteractionByID(ctx, iid)
+		}
+	}
+	// 2. Fall back to the current active interaction (legacy clients without
+	//    interaction_id in the picker payload).
+	if interaction == nil {
+		interaction, _ = r.store.GetActiveInteraction(ctx, convID)
+	}
+	if interaction == nil {
+		slog.Info("router: no interaction found for retry_model, treating as new question")
 		r.handleNewQuestion(ctx, task, convID, userID, out)
 		return
 	}
@@ -1138,7 +1153,11 @@ func (r *Router) handleRetryModel(ctx context.Context, task *a2a.Task, convID, u
 		return
 	}
 
-	slog.Info("router: retry_model", "model", modelName, "category", category, "interaction", interaction.ID)
+	slog.Info("router: retry_model",
+		"model", modelName,
+		"category", category,
+		"interaction", interaction.ID,
+		"state", interaction.State)
 
 	switch config.ModelCategory(category) {
 	case config.CategoryVision:

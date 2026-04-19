@@ -319,13 +319,23 @@ func (c *Client) StreamComplete(ctx context.Context, messages []ChatMessage, onT
 			return result, nil
 		}
 
-		// Only retry on transient empty-stream / EOF errors.
-		// If the onToken callback returned an error, or context was cancelled,
-		// or the server returned a non-200 status, don't retry.
+		// Abort early on context cancellation.
 		if ctx.Err() != nil {
 			return result, err
 		}
 		lastErr = err
+
+		// Non-200 HTTP status → not retryable (doStreamRequest tags these
+		// with TokenChunks == -1). Return the error immediately so the
+		// caller can surface a model-picker UX without the user waiting
+		// through N rounds of back-off for a permanent failure.
+		if result != nil && result.TokenChunks < 0 {
+			slog.Warn("llm: stream non-retryable failure",
+				"model", c.Model,
+				"attempt", attempt+1,
+				"error", err)
+			return result, err
+		}
 
 		// Heuristic: only retry if the stream produced nothing useful
 		// (immediate EOF / 0 tokens).  If we already streamed tokens to

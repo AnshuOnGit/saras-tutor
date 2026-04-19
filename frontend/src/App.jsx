@@ -164,6 +164,10 @@ export default function App() {
         // 1. Image extraction confirmation (text is the extracted content)
         // 2. Hint follow-up (text is JSON with hint_level and question)
         if (ev.state === "input-needed" && ev.message?.parts) {
+          // Release the streaming spinner immediately so the user sees the
+          // picker / action buttons without waiting for the SSE stream to
+          // close.
+          setStreaming(false);
           const rawText = ev.message.parts
             .filter((p) => p.type === "text")
             .map((p) => p.text)
@@ -255,8 +259,9 @@ export default function App() {
 
   // Model picker handlers
   function handlePickModel(model, category) {
+    const interactionId = pendingModelPicker?.interactionId || "";
     setPendingModelPicker(null);
-    sendRetryModel(model, category);
+    sendRetryModel(model, category, interactionId);
   }
 
   function handleDismissModelPicker() {
@@ -272,7 +277,7 @@ export default function App() {
 
   // Send a retry_model request with the selected model
   const sendRetryModel = useCallback(
-    async (model, category) => {
+    async (model, category, interactionId) => {
       setMessages((prev) => [
         ...prev,
         {
@@ -290,6 +295,7 @@ export default function App() {
         action: "retry_model",
         model: model,
         category: category || "",
+        interaction_id: interactionId || "",
         message: { content_type: "text", text: "" },
       });
 
