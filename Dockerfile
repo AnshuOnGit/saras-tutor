@@ -1,5 +1,5 @@
 # Build stage
-FROM golang:1.24-alpine AS builder
+FROM golang:1.23-alpine AS builder
 
 WORKDIR /app
 
@@ -10,13 +10,13 @@ RUN apk add --no-cache git ca-certificates
 
 # Copy go mod files
 COPY go.mod go.sum ./
-RUN go mod download
+RUN GOTOOLCHAIN=auto go mod download
 
 # Copy source
 COPY . .
 
 # Build the studio binary
-RUN CGO_ENABLED=0 GOOS=linux go build -o /studio cmd/studio/main.go
+RUN GOTOOLCHAIN=auto CGO_ENABLED=0 GOOS=linux go build -o /studio cmd/studio/main.go
 
 # Runtime stage
 FROM alpine:3.20
