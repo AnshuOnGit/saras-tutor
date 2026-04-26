@@ -204,17 +204,39 @@ Key: the `text` field in each slot carries the user-edited extraction text. If e
 
 ## Data Model
 
-### `extractions`
+Full ER diagram: [`db/entity_relationships.md`](db/entity_relationships.md)
 
-| Column | Type | Description |
-|--------|------|-------------|
-| `id` | `TEXT PK` | UUID |
-| `session_id` | `TEXT` | Client session |
-| `user_id` | `TEXT` | User identifier |
-| `image_url` | `TEXT` | R2 public URL or data URI |
-| `extracted_text` | `TEXT` | OCR result |
-| `model_id` | `TEXT` | NIM model used |
-| `created_at` | `TIMESTAMPTZ` | Timestamp |
+```mermaid
+erDiagram
+    extractions ||--o{ studio_messages : "question_extraction_id"
+    extractions ||--o{ studio_messages : "attempt_extraction_id"
+
+    extractions {
+        TEXT id PK
+        TEXT session_id
+        TEXT user_id
+        TEXT image_url
+        TEXT extracted_text
+        TEXT model_id
+        TIMESTAMPTZ created_at
+    }
+
+    studio_messages {
+        TEXT id PK
+        TEXT conversation_id
+        TEXT user_id
+        TEXT role "user | assistant"
+        TEXT intent "question | attempt | solve | hint | evaluate | followup"
+        TEXT content
+        TEXT question_extraction_id FK
+        TEXT attempt_extraction_id FK
+        JSONB meta
+        TIMESTAMPTZ created_at
+    }
+```
+
+- **`extractions`** — OCR results from image uploads. Each row is one model run on one image.
+- **`studio_messages`** — Append-only conversation log. Every user input (question/attempt/followup) and every assistant response is a row, threaded by `conversation_id`. Foreign keys link back to the source extractions.
 
 ---
 

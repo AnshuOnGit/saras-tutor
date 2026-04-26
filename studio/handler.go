@@ -310,12 +310,13 @@ func (h *Handler) ListExtractions(c *gin.Context) {
 
 // ChatRequest is the JSON body for POST /api/chat.
 type ChatRequest struct {
-	SessionID string     `json:"session_id" binding:"required"`
-	UserID    string     `json:"user_id" binding:"required"`
-	ModelID   string     `json:"model"`
-	Intent    string     `json:"intent"`  // solve | hint | evaluate | followup
-	Slots     []ChatSlot `json:"slots"`   // extraction cards with role labels
-	Message   string     `json:"message"` // free-text follow-up
+	SessionID      string     `json:"session_id" binding:"required"`
+	UserID         string     `json:"user_id" binding:"required"`
+	ConversationID string     `json:"conversation_id" binding:"required"`
+	ModelID        string     `json:"model"`
+	Intent         string     `json:"intent"`  // solve | hint | evaluate | followup
+	Slots          []ChatSlot `json:"slots"`   // extraction cards with role labels
+	Message        string     `json:"message"` // free-text follow-up
 	// History is the prior turns in this conversation (sent by frontend).
 	History []ChatTurn `json:"history"`
 }
@@ -548,7 +549,33 @@ RULES:
 		},
 	})
 
-	// Stream SSE
+	// ── Phase A: Pre-stream — save user inputs to studio_messages ──
+	for _, s := range req.Slots {
+		var resolvedText string
+		for _, rs := range slots {
+			if rs.Role == s.Role {
+				resolvedText = rs.Text
+				break
+			}
+		}
+		intent := s.Role // "question" or "attempt"
+		var qExtID, aExtID *string
+		if s.Role == "question" {
+			qExtID = &s.ExtractionID
+		} else {
+			aExtID = &s.ExtractionID
+		}
+		if err := h.saveMessage(ctx, req.ConversationID, req.UserID, "user", intent, resolvedText, qExtID, aExtID, nil); err != nil {
+			slog.Error("save user slot message", "error", err)
+		}
+	}
+	if req.Intent == "followup" && req.Message != "" {
+		if err := h.saveMessage(ctx, req.ConversationID, req.UserID, "user", "followup", req.Message, nil, nil, nil); err != nil {
+			slog.Error("save followup message", "error", err)
+		}
+	}
+
+	// ── Phase B: Stream SSE + buffer full response ──
 	solverClient := llm.NewClient(h.cfg.LLMAPIKey, modelID, h.cfg.LLMBaseURL, h.cfg.LLMUserID)
 
 	c.Writer.Header().Set("Content-Type", "text/event-stream")
@@ -562,6 +589,7 @@ RULES:
 		return
 	}
 
+	var fullResponse strings.Builder
 	tokenCh := make(chan string, 128)
 	go func() {
 		defer close(tokenCh)
@@ -572,6 +600,7 @@ RULES:
 	}()
 
 	for token := range tokenCh {
+		fullResponse.WriteString(token)
 		data, _ := json.Marshal(map[string]string{"type": "token", "text": token})
 		fmt.Fprintf(c.Writer, "data: %s\n\n", data)
 		flusher.Flush()
@@ -579,6 +608,16 @@ RULES:
 
 	fmt.Fprintf(c.Writer, "data: [DONE]\n\n")
 	flusher.Flush()
+
+	// ── Phase C: Post-stream — save assistant response ──
+	assistantIntent := req.Intent
+	if assistantIntent == "" {
+		assistantIntent = "solve"
+	}
+	meta := map[string]string{"model_id": modelID, "session_id": req.SessionID}
+	if err := h.saveMessage(ctx, req.ConversationID, req.UserID, "assistant", assistantIntent, fullResponse.String(), nil, nil, meta); err != nil {
+		slog.Error("save assistant message", "error", err)
+	}
 }
 
 // ─── Extraction model + persistence ───────────────────────────────────
@@ -599,5 +638,17 @@ func (h *Handler) saveExtraction(ctx context.Context, e *Extraction) error {
 		`INSERT INTO extractions (id, session_id, user_id, image_url, extracted_text, model_id, created_at)
 		 VALUES ($1, $2, $3, $4, $5, $6, $7)`,
 		e.ID, e.SessionID, e.UserID, e.ImageURL, e.ExtractedText, e.ModelID, e.CreatedAt)
+	return err
+}
+
+func (h *Handler) saveMessage(ctx context.Context, conversationID, userID, role, intent, content string, qExtID, aExtID *string, meta map[string]string) error {
+	metaJSON, _ := json.Marshal(meta)
+	if meta == nil {
+		metaJSON = []byte("{}")
+	}
+	_, err := h.pool.Exec(ctx,
+		`INSERT INTO studio_messages (id, conversation_id, user_id, role, intent, content, question_extraction_id, attempt_extraction_id, meta, created_at)
+		 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)`,
+		uuid.New().String(), conversationID, userID, role, intent, content, qExtID, aExtID, metaJSON, time.Now())
 	return err
 }

@@ -28,6 +28,25 @@ CREATE INDEX IF NOT EXISTS idx_extractions_session
 
 CREATE INDEX IF NOT EXISTS idx_extractions_user
     ON extractions(user_id, created_at DESC);
+
+CREATE TABLE IF NOT EXISTS studio_messages (
+    id                      TEXT PRIMARY KEY,
+    conversation_id         TEXT NOT NULL,
+    user_id                 TEXT,
+    role                    TEXT NOT NULL CHECK (role IN ('user', 'assistant')),
+    intent                  TEXT NOT NULL CHECK (intent IN ('question', 'attempt', 'solve', 'hint', 'evaluate', 'followup')),
+    content                 TEXT NOT NULL,
+    question_extraction_id  TEXT REFERENCES extractions(id),
+    attempt_extraction_id   TEXT REFERENCES extractions(id),
+    meta                    JSONB DEFAULT '{}'::jsonb,
+    created_at              TIMESTAMPTZ DEFAULT NOW()
+);
+
+CREATE INDEX IF NOT EXISTS idx_studio_messages_conversation
+    ON studio_messages(conversation_id, created_at);
+
+CREATE INDEX IF NOT EXISTS idx_studio_messages_user
+    ON studio_messages(user_id, created_at DESC);
 `
 	if _, err := pool.Exec(context.Background(), ddl); err != nil {
 		return fmt.Errorf("migrate: %w", err)

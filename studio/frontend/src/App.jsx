@@ -33,6 +33,7 @@ export default function App() {
   // ── Conversation ───────────────────────────────────────────────
   // messages: [{ id, role: "user"|"assistant", content }]
   const [messages, setMessages] = useState([]);
+  const [conversationId, setConversationId] = useState(crypto.randomUUID());
   const [streaming, setStreaming] = useState(false);
   const [followUp, setFollowUp] = useState("");
   const chatEndRef = useRef(null);
@@ -160,6 +161,7 @@ export default function App() {
   const clearConversation = () => {
     setMessages([]);
     setWorkspace([]);
+    setConversationId(crypto.randomUUID());
   };
 
   // ── Stream SSE ────────────────────────────────────────────────
@@ -199,6 +201,7 @@ export default function App() {
       const body = {
         session_id: SESSION_ID,
         user_id: USER_ID,
+        conversation_id: conversationId,
         model: selectedSolver,
         intent,
         slots: workspace.map((s) => ({
@@ -265,7 +268,7 @@ export default function App() {
         setStreaming(false);
       }
     },
-    [selectedSolver, streaming, workspace, messages]
+    [selectedSolver, streaming, workspace, messages, conversationId]
   );
 
   const handleFollowUp = (e) => {
