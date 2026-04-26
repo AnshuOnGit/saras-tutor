@@ -8,8 +8,8 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
-	"log/slog"
 	"net/http"
+	"saras-tutor/internal/logger"
 	"strings"
 	"time"
 )
@@ -195,13 +195,13 @@ func (c *Client) Complete(ctx context.Context, messages []ChatMessage) (*Complet
 	}
 	body, _ := json.Marshal(reqPayload)
 
-	slog.Info("llm: request",
-		"model", c.Model,
-		"base_url", c.BaseURL,
-		"body_bytes", len(body),
-		"max_tokens", c.MaxTokens,
-		"msg_count", len(messages),
-		"messages", summarizeMessages(messages))
+	logger.Info().Str("model", c.Model).
+		Str("base_url", c.BaseURL).
+		Int("body_bytes", len(body)).
+		Int("max_tokens", c.MaxTokens).
+		Int("msg_count", len(messages)).
+		Interface("messages", summarizeMessages(messages)).
+		Msg("llm: request")
 
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.BaseURL+"/chat/completions", bytes.NewReader(body))
 	if err != nil {
@@ -213,19 +213,19 @@ func (c *Client) Complete(ctx context.Context, messages []ChatMessage) (*Complet
 	resp, err := httpClient.Do(req)
 	httpDuration := time.Since(httpStart)
 	if err != nil {
-		slog.Error("llm: HTTP request failed",
-			"model", c.Model,
-			"error", err,
-			"elapsed_ms", httpDuration.Milliseconds())
+		logger.Error().Str("model", c.Model).
+			Err(err).
+			Int64("elapsed_ms", httpDuration.Milliseconds()).
+			Msg("llm: HTTP request failed")
 		return nil, err
 	}
 	defer resp.Body.Close()
 
-	slog.Info("llm: HTTP response received",
-		"model", c.Model,
-		"status", resp.StatusCode,
-		"elapsed_ms", httpDuration.Milliseconds(),
-		"elapsed_s", fmt.Sprintf("%.1f", httpDuration.Seconds()))
+	logger.Info().Str("model", c.Model).
+		Int("status", resp.StatusCode).
+		Int64("elapsed_ms", httpDuration.Milliseconds()).
+		Str("elapsed_s", fmt.Sprintf("%.1f", httpDuration.Seconds())).
+		Msg("llm: HTTP response received")
 
 	if resp.StatusCode != http.StatusOK {
 		b, _ := io.ReadAll(resp.Body)
@@ -244,14 +244,14 @@ func (c *Client) Complete(ctx context.Context, messages []ChatMessage) (*Complet
 	if model == "" {
 		model = c.Model
 	}
-	slog.Info("llm: complete",
-		"model", model,
-		"prompt_tokens", cr.Usage.PromptTokens,
-		"completion_tokens", cr.Usage.CompletionTokens,
-		"total_tokens", cr.Usage.TotalTokens,
-		"response_len", len(content),
-		"response", truncate(content, 4000),
-		"total_elapsed_ms", httpDuration.Milliseconds())
+	logger.Info().Str("model", model).
+		Int("prompt_tokens", cr.Usage.PromptTokens).
+		Int("completion_tokens", cr.Usage.CompletionTokens).
+		Int("total_tokens", cr.Usage.TotalTokens).
+		Int("response_len", len(content)).
+		Str("response", truncate(content, 4000)).
+		Int64("total_elapsed_ms", httpDuration.Milliseconds()).
+		Msg("llm: complete")
 	return &CompletionResult{
 		Content: content,
 		Model:   model,
@@ -279,12 +279,12 @@ const maxStreamRetries = 2
 // produces 0 tokens (a common transient failure on NVIDIA NIM), the request
 // is retried up to maxStreamRetries times with a short back-off.
 func (c *Client) StreamComplete(ctx context.Context, messages []ChatMessage, onToken func(token string) error) (*StreamResult, error) {
-	slog.Info("llm: stream request prompt",
-		"model", c.Model,
-		"base_url", c.BaseURL,
-		"max_tokens", c.MaxTokens,
-		"msg_count", len(messages),
-		"messages", summarizeMessages(messages))
+	logger.Info().Str("model", c.Model).
+		Str("base_url", c.BaseURL).
+		Int("max_tokens", c.MaxTokens).
+		Int("msg_count", len(messages)).
+		Interface("messages", summarizeMessages(messages)).
+		Msg("llm: stream request prompt")
 
 	body, _ := json.Marshal(chatRequest{
 		Model:     c.Model,
@@ -298,11 +298,11 @@ func (c *Client) StreamComplete(ctx context.Context, messages []ChatMessage, onT
 	for attempt := 0; attempt <= maxStreamRetries; attempt++ {
 		if attempt > 0 {
 			backoff := time.Duration(attempt) * 2 * time.Second
-			slog.Warn("llm: stream retry",
-				"model", c.Model,
-				"attempt", attempt+1,
-				"backoff_s", backoff.Seconds(),
-				"prev_error", lastErr)
+			logger.Warn().Str("model", c.Model).
+				Int("attempt", attempt+1).
+				Float64("backoff_s", backoff.Seconds()).
+				AnErr("prev_error", lastErr).
+				Msg("llm: stream retry")
 			select {
 			case <-time.After(backoff):
 			case <-ctx.Done():
@@ -326,10 +326,10 @@ func (c *Client) StreamComplete(ctx context.Context, messages []ChatMessage, onT
 		// caller can surface a model-picker UX without the user waiting
 		// through N rounds of back-off for a permanent failure.
 		if result != nil && result.TokenChunks < 0 {
-			slog.Warn("llm: stream non-retryable failure",
-				"model", c.Model,
-				"attempt", attempt+1,
-				"error", err)
+			logger.Warn().Str("model", c.Model).
+				Int("attempt", attempt+1).
+				Err(err).
+				Msg("llm: stream non-retryable failure")
 			return result, err
 		}
 
@@ -345,12 +345,12 @@ func (c *Client) StreamComplete(ctx context.Context, messages []ChatMessage, onT
 
 // doStreamRequest executes a single streaming HTTP request and reads the SSE stream.
 func (c *Client) doStreamRequest(ctx context.Context, body []byte, attempt int, onToken func(token string) error) (*StreamResult, error) {
-	slog.Info("llm: stream request",
-		"model", c.Model,
-		"body_bytes", len(body),
-		"max_tokens", c.MaxTokens,
-		"msg_count", -1, // not available here, logged by caller
-		"attempt", attempt+1)
+	logger.Info().Str("model", c.Model).
+		Int("body_bytes", len(body)).
+		Int("max_tokens", c.MaxTokens).
+		Int("msg_count", -1). // not available here, logged by caller
+		Int("attempt", attempt+1).
+		Msg("llm: stream request")
 
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.BaseURL+"/chat/completions", bytes.NewReader(body))
 	if err != nil {
@@ -361,20 +361,20 @@ func (c *Client) doStreamRequest(ctx context.Context, body []byte, attempt int, 
 	httpStart := time.Now()
 	resp, err := httpClient.Do(req)
 	if err != nil {
-		slog.Error("llm: stream HTTP failed",
-			"model", c.Model,
-			"attempt", attempt+1,
-			"error", err,
-			"elapsed_ms", time.Since(httpStart).Milliseconds())
+		logger.Error().Str("model", c.Model).
+			Int("attempt", attempt+1).
+			Err(err).
+			Int64("elapsed_ms", time.Since(httpStart).Milliseconds()).
+			Msg("llm: stream HTTP failed")
 		return nil, err
 	}
 	defer resp.Body.Close()
 
-	slog.Info("llm: stream connected",
-		"model", c.Model,
-		"attempt", attempt+1,
-		"status", resp.StatusCode,
-		"time_to_first_byte_ms", time.Since(httpStart).Milliseconds())
+	logger.Info().Str("model", c.Model).
+		Int("attempt", attempt+1).
+		Int("status", resp.StatusCode).
+		Int64("time_to_first_byte_ms", time.Since(httpStart).Milliseconds()).
+		Msg("llm: stream connected")
 
 	if resp.StatusCode != http.StatusOK {
 		b, _ := io.ReadAll(resp.Body)
@@ -396,10 +396,10 @@ func (c *Client) doStreamRequest(ctx context.Context, body []byte, attempt int, 
 			continue // SSE blank separator
 		}
 		if !strings.HasPrefix(line, "data: ") {
-			slog.Debug("llm: stream non-data line",
-				"model", c.Model,
-				"line_num", lineCount,
-				"line", line)
+			logger.Debug().Str("model", c.Model).
+				Int("line_num", lineCount).
+				Str("line", line).
+				Msg("llm: stream non-data line")
 			continue
 		}
 		data := strings.TrimPrefix(line, "data: ")
@@ -408,11 +408,11 @@ func (c *Client) doStreamRequest(ctx context.Context, body []byte, attempt int, 
 		}
 		var chunk streamChunk
 		if err := json.Unmarshal([]byte(data), &chunk); err != nil {
-			slog.Warn("llm: stream chunk parse failed",
-				"model", c.Model,
-				"error", err,
-				"line_num", lineCount,
-				"data_prefix", truncateStr(data, 300))
+			logger.Warn().Str("model", c.Model).
+				Err(err).
+				Int("line_num", lineCount).
+				Str("data_prefix", truncateStr(data, 300)).
+				Msg("llm: stream chunk parse failed")
 			continue
 		}
 		if chunk.Usage != nil {
@@ -433,39 +433,39 @@ func (c *Client) doStreamRequest(ctx context.Context, body []byte, attempt int, 
 
 	// Check for scanner errors (unexpected EOF, buffer overflow, etc.)
 	if scanErr := scanner.Err(); scanErr != nil {
-		slog.Error("llm: stream scanner error",
-			"model", c.Model,
-			"attempt", attempt+1,
-			"error", scanErr,
-			"lines_read", lineCount,
-			"token_chunks", tokenCount,
-			"elapsed_ms", elapsed.Milliseconds())
+		logger.Error().Str("model", c.Model).
+			Int("attempt", attempt+1).
+			Err(scanErr).
+			Int("lines_read", lineCount).
+			Int("token_chunks", tokenCount).
+			Int64("elapsed_ms", elapsed.Milliseconds()).
+			Msg("llm: stream scanner error")
 		return &StreamResult{Usage: usage, TokenChunks: tokenCount},
 			fmt.Errorf("llm: stream read error (%s): %w", c.Model, scanErr)
 	}
 
 	// Empty stream — retryable
 	if tokenCount == 0 {
-		slog.Warn("llm: stream returned 0 tokens",
-			"model", c.Model,
-			"attempt", attempt+1,
-			"lines_read", lineCount,
-			"elapsed_ms", elapsed.Milliseconds())
+		logger.Warn().Str("model", c.Model).
+			Int("attempt", attempt+1).
+			Int("lines_read", lineCount).
+			Int64("elapsed_ms", elapsed.Milliseconds()).
+			Msg("llm: stream returned 0 tokens")
 		return &StreamResult{Usage: usage, TokenChunks: 0},
 			fmt.Errorf("llm: stream from %s returned 0 tokens (lines read: %d)", c.Model, lineCount)
 	}
 
-	slog.Info("llm: stream complete",
-		"model", c.Model,
-		"attempt", attempt+1,
-		"prompt_tokens", usage.PromptTokens,
-		"completion_tokens", usage.CompletionTokens,
-		"total_tokens", usage.TotalTokens,
-		"response_len", full.Len(),
-		"response", truncate(full.String(), 4000),
-		"token_chunks", tokenCount,
-		"total_elapsed_ms", elapsed.Milliseconds(),
-		"total_elapsed_s", fmt.Sprintf("%.1f", elapsed.Seconds()))
+	logger.Info().Str("model", c.Model).
+		Int("attempt", attempt+1).
+		Int("prompt_tokens", usage.PromptTokens).
+		Int("completion_tokens", usage.CompletionTokens).
+		Int("total_tokens", usage.TotalTokens).
+		Int("response_len", full.Len()).
+		Str("response", truncate(full.String(), 4000)).
+		Int("token_chunks", tokenCount).
+		Int64("total_elapsed_ms", elapsed.Milliseconds()).
+		Str("total_elapsed_s", fmt.Sprintf("%.1f", elapsed.Seconds())).
+		Msg("llm: stream complete")
 	return &StreamResult{Usage: usage, TokenChunks: tokenCount}, nil
 }
 

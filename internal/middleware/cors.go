@@ -2,18 +2,30 @@ package middleware
 
 import (
 	"net/http"
+	"strconv"
+	"strings"
+
+	"saras-tutor/internal/config"
 
 	"github.com/gin-gonic/gin"
 )
 
-// CORS returns a Gin middleware that sets permissive cross-origin headers.
-// Suitable for local development; tighten AllowOrigin for production.
-func CORS() gin.HandlerFunc {
+// CORS returns a Gin middleware that sets cross-origin headers from config.
+func CORS(cfg config.CORSConfig) gin.HandlerFunc {
+	origins := strings.Join(cfg.AllowedOrigins, ", ")
+	methods := strings.Join(cfg.AllowedMethods, ", ")
+	headers := strings.Join(cfg.AllowedHeaders, ", ")
+	exposed := strings.Join(cfg.ExposedHeaders, ", ")
+	maxAge := strconv.Itoa(cfg.MaxAge)
+	creds := strconv.FormatBool(cfg.AllowCredentials)
+
 	return func(c *gin.Context) {
-		c.Writer.Header().Set("Access-Control-Allow-Origin", "*")
-		c.Writer.Header().Set("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS")
-		c.Writer.Header().Set("Access-Control-Allow-Headers", "Content-Type, Authorization, X-Request-ID")
-		c.Writer.Header().Set("Access-Control-Expose-Headers", "X-Conversation-ID")
+		c.Writer.Header().Set("Access-Control-Allow-Origin", origins)
+		c.Writer.Header().Set("Access-Control-Allow-Methods", methods)
+		c.Writer.Header().Set("Access-Control-Allow-Headers", headers)
+		c.Writer.Header().Set("Access-Control-Expose-Headers", exposed)
+		c.Writer.Header().Set("Access-Control-Allow-Credentials", creds)
+		c.Writer.Header().Set("Access-Control-Max-Age", maxAge)
 
 		if c.Request.Method == http.MethodOptions {
 			c.AbortWithStatus(http.StatusNoContent)

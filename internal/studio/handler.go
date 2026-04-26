@@ -11,8 +11,8 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
-	"log/slog"
 	"net/http"
+	"saras-tutor/internal/logger"
 	"sort"
 	"strings"
 	"time"
@@ -224,37 +224,37 @@ func (h *Handler) Extract(c *gin.Context) {
 	if h.storage != nil {
 		publicURL, upErr := h.storage.UploadImage(c.Request.Context(), imageBytes, fileHeader.Filename)
 		if upErr != nil {
-			slog.Error("R2 upload failed", "error", upErr)
+			logger.Error().Err(upErr).Msg("R2 upload failed")
 			c.JSON(http.StatusInternalServerError, gin.H{"error": "upload failed"})
 			return
 		}
 		imageURL = publicURL
-		slog.Info("image uploaded to R2", "url", imageURL)
+		logger.Info().Str("url", imageURL).Msg("image uploaded to R2")
 	} else {
 		b64 := base64.StdEncoding.EncodeToString(imageBytes)
 		imageURL = fmt.Sprintf("data:%s;base64,%s", mimeType, b64)
-		slog.Info("image uploaded as data URI", "url", imageURL)
+		logger.Info().Str("url", imageURL).Msg("image uploaded as data URI")
 	}
 
 	// Run extraction via the vision LLM
 	ctx := c.Request.Context()
 	extractedText, extractErr := extractTextFromImage(ctx, extractConfig{
-		apiKey:  h.cfg.LLMAPIKey,
+		apiKey:  h.cfg.LLM.APIKey,
 		modelID: modelID,
-		baseURL: h.cfg.LLMBaseURL,
-		userID:  h.cfg.LLMUserID,
+		baseURL: h.cfg.LLM.BaseURL,
+		userID:  h.cfg.LLM.UserID,
 	}, imageURL)
 	if extractErr != nil {
-		slog.Error("extraction failed", "error", extractErr, "model", modelID)
+		logger.Error().Err(extractErr).Str("model", modelID).Msg("extraction failed")
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "extraction failed: " + extractErr.Error()})
 		return
 	}
 
 	// Validate extracted content is PCMB-only
 	safety := ValidateContent(ctx, gatekeeperConfig{
-		apiKey:  h.cfg.LLMAPIKey,
-		baseURL: h.cfg.LLMBaseURL,
-		userID:  h.cfg.LLMUserID,
+		apiKey:  h.cfg.LLM.APIKey,
+		baseURL: h.cfg.LLM.BaseURL,
+		userID:  h.cfg.LLM.UserID,
 	}, extractedText)
 	if !safety.Safe {
 		c.JSON(http.StatusBadRequest, gin.H{
@@ -275,7 +275,7 @@ func (h *Handler) Extract(c *gin.Context) {
 		CreatedAt:     time.Now().UTC(),
 	}
 	if err := h.saveExtraction(ctx, extraction); err != nil {
-		slog.Error("persist extraction failed", "error", err)
+		logger.Error().Err(err).Msg("persist extraction failed")
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to save extraction"})
 		return
 	}
@@ -367,9 +367,9 @@ func (h *Handler) Chat(c *gin.Context) {
 
 	// Validate follow-up message if present
 	gkCfgMsg := gatekeeperConfig{
-		apiKey:  h.cfg.LLMAPIKey,
-		baseURL: h.cfg.LLMBaseURL,
-		userID:  h.cfg.LLMUserID,
+		apiKey:  h.cfg.LLM.APIKey,
+		baseURL: h.cfg.LLM.BaseURL,
+		userID:  h.cfg.LLM.UserID,
 	}
 	if req.Message != "" {
 		safety := ValidateContent(ctx, gkCfgMsg, req.Message)
@@ -404,9 +404,9 @@ func (h *Handler) Chat(c *gin.Context) {
 
 	// Validate all slot texts (catches user-edited extractions with non-PCMB content)
 	gkCfg := gatekeeperConfig{
-		apiKey:  h.cfg.LLMAPIKey,
-		baseURL: h.cfg.LLMBaseURL,
-		userID:  h.cfg.LLMUserID,
+		apiKey:  h.cfg.LLM.APIKey,
+		baseURL: h.cfg.LLM.BaseURL,
+		userID:  h.cfg.LLM.UserID,
 	}
 	for _, s := range slots {
 		safety := ValidateContent(ctx, gkCfg, s.Text)
@@ -614,17 +614,17 @@ RULES:
 			aExtID = &s.ExtractionID
 		}
 		if err := h.saveMessage(ctx, req.ConversationID, req.UserID, "user", intent, resolvedText, qExtID, aExtID, nil); err != nil {
-			slog.Error("save user slot message", "error", err)
+			logger.Error().Err(err).Msg("save user slot message")
 		}
 	}
 	if req.Intent == "followup" && req.Message != "" {
 		if err := h.saveMessage(ctx, req.ConversationID, req.UserID, "user", "followup", req.Message, nil, nil, nil); err != nil {
-			slog.Error("save followup message", "error", err)
+			logger.Error().Err(err).Msg("save followup message")
 		}
 	}
 
 	// ── Phase B: Stream SSE + buffer full response ──
-	solverClient := llm.NewClient(h.cfg.LLMAPIKey, modelID, h.cfg.LLMBaseURL, h.cfg.LLMUserID)
+	solverClient := llm.NewClient(h.cfg.LLM.APIKey, modelID, h.cfg.LLM.BaseURL, h.cfg.LLM.UserID)
 
 	c.Writer.Header().Set("Content-Type", "text/event-stream")
 	c.Writer.Header().Set("Cache-Control", "no-cache")
@@ -664,7 +664,7 @@ RULES:
 	}
 	meta := map[string]string{"model_id": modelID, "session_id": req.SessionID}
 	if err := h.saveMessage(ctx, req.ConversationID, req.UserID, "assistant", assistantIntent, fullResponse.String(), nil, nil, meta); err != nil {
-		slog.Error("save assistant message", "error", err)
+		logger.Error().Err(err).Msg("save assistant message")
 	}
 }
 

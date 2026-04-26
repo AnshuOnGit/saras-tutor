@@ -3,8 +3,8 @@ package studio
 import (
 	"context"
 	"encoding/json"
-	"log/slog"
 	"regexp"
+	"saras-tutor/internal/logger"
 	"strings"
 	"time"
 
@@ -192,8 +192,8 @@ func CheckIntentPurity(ctx context.Context, cfg gatekeeperConfig, text string) S
 		resp, err := client.Complete(gateCtx, messages)
 		cancel()
 		if err != nil {
-			slog.Warn("[GATEKEEPER] LLM call failed, trying next model",
-				"model", modelID, "error", err)
+			logger.Warn().Err(err).Str("model", modelID).
+				Msg("[GATEKEEPER] LLM call failed, trying next model")
 			continue
 		}
 
@@ -205,16 +205,16 @@ func CheckIntentPurity(ctx context.Context, cfg gatekeeperConfig, text string) S
 
 		var result SafetyResult
 		if err := json.Unmarshal([]byte(content), &result); err != nil {
-			slog.Warn("[GATEKEEPER] JSON parse failed, trying next model",
-				"model", modelID, "error", err, "raw", content)
+			logger.Warn().Err(err).Str("model", modelID).Str("raw", content).
+				Msg("[GATEKEEPER] JSON parse failed, trying next model")
 			continue
 		}
-		slog.Info("[GATEKEEPER] LLM gate result",
-			"model", modelID, "safe", result.Safe, "reason", result.Reason)
+		logger.Info().Str("model", modelID).Bool("safe", result.Safe).Str("reason", result.Reason).
+			Msg("[GATEKEEPER] LLM gate result")
 		return result
 	}
 
-	slog.Warn("[GATEKEEPER] All models failed, failing open")
+	logger.Warn().Msg("[GATEKEEPER] All models failed, failing open")
 	return SafetyResult{Safe: true}
 }
 
@@ -229,18 +229,16 @@ type gatekeeperConfig struct {
 func ValidateContent(ctx context.Context, cfg gatekeeperConfig, text string) SafetyResult {
 	// Layer 1: regex pre-filter
 	if blocked, reason := QuickReject(text); blocked {
-		slog.Info("[GATEKEEPER] Quick-rejected",
-			"reason", reason,
-			"text_preview", truncateText(text, 100))
+		logger.Info().Str("reason", reason).Str("text_preview", truncateText(text, 100)).
+			Msg("[GATEKEEPER] Quick-rejected")
 		return SafetyResult{Safe: false, Reason: reason}
 	}
 
 	// Layer 2: LLM gate
 	result := CheckIntentPurity(ctx, cfg, text)
 	if !result.Safe {
-		slog.Info("[GATEKEEPER] LLM-rejected",
-			"reason", result.Reason,
-			"text_preview", truncateText(text, 100))
+		logger.Info().Str("reason", result.Reason).Str("text_preview", truncateText(text, 100)).
+			Msg("[GATEKEEPER] LLM-rejected")
 	}
 	return result
 }

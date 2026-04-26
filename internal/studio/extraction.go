@@ -10,9 +10,9 @@ import (
 	"image/jpeg"
 	"image/png"
 	"io"
-	"log/slog"
 	"math"
 	"net/http"
+	"saras-tutor/internal/logger"
 	"strings"
 	"time"
 
@@ -67,10 +67,10 @@ func resizeImage(raw []byte, inputMime string) ([]byte, string, error) {
 		return nil, "", fmt.Errorf("encode resized image: %w", err)
 	}
 
-	slog.Info("resize: complete",
-		"orig", fmt.Sprintf("%dx%d", origW, origH),
-		"new", fmt.Sprintf("%dx%d", newW, newH),
-		"original_bytes", len(raw), "resized_bytes", buf.Len())
+	logger.Info().Str("orig", fmt.Sprintf("%dx%d", origW, origH)).
+		Str("new", fmt.Sprintf("%dx%d", newW, newH)).
+		Int("original_bytes", len(raw)).Int("resized_bytes", buf.Len()).
+		Msg("resize: complete")
 
 	return buf.Bytes(), outMime, nil
 }
@@ -207,10 +207,10 @@ func extractTextFromImage(ctx context.Context, cfg extractConfig, imageURL strin
 	if err != nil {
 		return "", fmt.Errorf("vision LLM call failed: %w", err)
 	}
-	slog.Info("extraction: LLM responded",
-		"model", raw.Model,
-		"elapsed_ms", time.Since(llmStart).Milliseconds(),
-		"tokens", raw.Usage.TotalTokens)
+	logger.Info().Str("model", raw.Model).
+		Int64("elapsed_ms", time.Since(llmStart).Milliseconds()).
+		Int("tokens", raw.Usage.TotalTokens).
+		Msg("extraction: LLM responded")
 
 	extracted := strings.TrimSpace(raw.Content)
 
@@ -228,7 +228,7 @@ func extractTextFromImage(ctx context.Context, cfg extractConfig, imageURL strin
 
 	var resp extractionResponse
 	if err := json.Unmarshal([]byte(extracted), &resp); err != nil {
-		slog.Warn("extraction: JSON parse failed, using raw text", "error", err)
+		logger.Warn().Err(err).Msg("extraction: JSON parse failed, using raw text")
 		return extracted, nil
 	}
 

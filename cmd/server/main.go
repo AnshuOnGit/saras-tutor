@@ -2,11 +2,11 @@ package main
 
 import (
 	"context"
-	"log/slog"
 	"os"
 
 	"saras-tutor/internal/config"
 	"saras-tutor/internal/db"
+	"saras-tutor/internal/logger"
 	"saras-tutor/internal/middleware"
 	"saras-tutor/internal/storage"
 	"saras-tutor/internal/studio"
@@ -16,39 +16,44 @@ import (
 )
 
 func main() {
-	slog.SetDefault(slog.New(slog.NewJSONHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelInfo})))
 	_ = godotenv.Load()
 
 	cfg := config.Load()
+
+	logger.Init(logger.Config{
+		Level:       cfg.Logging.Level,
+		Format:      cfg.Logging.Format,
+		ServiceName: "saras-studio",
+		Version:     "1.0.0",
+	})
+
 	if err := cfg.Validate(); err != nil {
-		slog.Error("invalid configuration", "error", err)
-		os.Exit(1)
+		logger.Fatal().Err(err).Msg("invalid configuration")
 	}
 
-	pool, err := db.NewPool(cfg.DatabaseURL)
+	pool, err := db.NewPool(cfg.Database.URL)
 	if err != nil {
-		slog.Error("database connection failed", "error", err)
-		os.Exit(1)
+		logger.Fatal().Err(err).Msg("database connection failed")
 	}
 	defer pool.Close()
 
 	if err := db.Migrate(pool); err != nil {
-		slog.Error("migration failed", "error", err)
-		os.Exit(1)
+		logger.Fatal().Err(err).Msg("migration failed")
 	}
 
 	// R2 storage (optional — nil means inline data URIs)
 	storageSvc, storageErr := storage.NewStorageService(context.Background(), storage.R2Config{})
 	if storageErr != nil {
-		slog.Warn("R2 storage disabled", "error", storageErr)
+		logger.Warn().Err(storageErr).Msg("R2 storage disabled")
 		storageSvc = nil
 	}
 
 	h := studio.NewHandler(cfg, pool, storageSvc)
 
 	r := gin.Default()
-	r.Use(middleware.CORS())
+	r.Use(middleware.CORS(cfg.CORS))
 	r.Use(middleware.RequestID())
+	r.Use(middleware.Logger())
 
 	r.GET("/health", func(c *gin.Context) { c.JSON(200, gin.H{"status": "ok"}) })
 
@@ -65,9 +70,8 @@ func main() {
 	if port == "" {
 		port = "8090"
 	}
-	slog.Info("studio listening", "port", port)
+	logger.Info().Str("port", port).Msg("studio listening")
 	if err := r.Run(":" + port); err != nil {
-		slog.Error("server error", "error", err)
-		os.Exit(1)
+		logger.Fatal().Err(err).Msg("server error")
 	}
 }
