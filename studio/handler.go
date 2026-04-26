@@ -250,6 +250,20 @@ func (h *Handler) Extract(c *gin.Context) {
 		return
 	}
 
+	// Validate extracted content is PCMB-only
+	safety := ValidateContent(ctx, gatekeeperConfig{
+		apiKey:  h.cfg.LLMAPIKey,
+		baseURL: h.cfg.LLMBaseURL,
+		userID:  h.cfg.LLMUserID,
+	}, extractedText)
+	if !safety.Safe {
+		c.JSON(http.StatusBadRequest, gin.H{
+			"error":  "This content is not supported. Saras only handles Physics, Chemistry, Math, and Biology questions.",
+			"reason": safety.Reason,
+		})
+		return
+	}
+
 	// Persist
 	extraction := &Extraction{
 		ID:            uuid.New().String(),
@@ -351,6 +365,23 @@ func (h *Handler) Chat(c *gin.Context) {
 
 	ctx := c.Request.Context()
 
+	// Validate follow-up message if present
+	gkCfgMsg := gatekeeperConfig{
+		apiKey:  h.cfg.LLMAPIKey,
+		baseURL: h.cfg.LLMBaseURL,
+		userID:  h.cfg.LLMUserID,
+	}
+	if req.Message != "" {
+		safety := ValidateContent(ctx, gkCfgMsg, req.Message)
+		if !safety.Safe {
+			c.JSON(http.StatusBadRequest, gin.H{
+				"error":  "Your message contains unsupported content. Saras only handles Physics, Chemistry, Math, and Biology questions.",
+				"reason": safety.Reason,
+			})
+			return
+		}
+	}
+
 	// Resolve extraction texts
 	type resolvedSlot struct {
 		Role string
@@ -369,6 +400,23 @@ func (h *Handler) Chat(c *gin.Context) {
 			}
 		}
 		slots = append(slots, resolvedSlot{Role: s.Role, Text: text})
+	}
+
+	// Validate all slot texts (catches user-edited extractions with non-PCMB content)
+	gkCfg := gatekeeperConfig{
+		apiKey:  h.cfg.LLMAPIKey,
+		baseURL: h.cfg.LLMBaseURL,
+		userID:  h.cfg.LLMUserID,
+	}
+	for _, s := range slots {
+		safety := ValidateContent(ctx, gkCfg, s.Text)
+		if !safety.Safe {
+			c.JSON(http.StatusBadRequest, gin.H{
+				"error":  "Your " + s.Role + " contains unsupported content. Saras only handles Physics, Chemistry, Math, and Biology questions.",
+				"reason": safety.Reason,
+			})
+			return
+		}
 	}
 
 	// Build system prompt based on intent
