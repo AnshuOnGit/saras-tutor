@@ -1,4 +1,4 @@
-# Build stage
+# Build stage — Go 1.24 with auto-toolchain for 1.25 deps
 FROM golang:1.24-alpine AS builder
 
 WORKDIR /app
