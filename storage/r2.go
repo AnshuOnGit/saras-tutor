@@ -75,6 +75,9 @@ func NewStorageService(ctx context.Context, cfg R2Config) (*StorageService, erro
 	if cfg.Endpoint == "" {
 		return nil, fmt.Errorf("storage: R2_ENDPOINT is required")
 	}
+	if !strings.HasPrefix(cfg.Endpoint, "https://") {
+		return nil, fmt.Errorf("storage: R2_ENDPOINT must use https:// (got %q)", cfg.Endpoint)
+	}
 	if cfg.Bucket == "" {
 		return nil, fmt.Errorf("storage: R2_BUCKET is required")
 	}

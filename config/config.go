@@ -1,7 +1,9 @@
 package config
 
 import (
+	"fmt"
 	"os"
+	"strings"
 )
 
 // Config holds all application configuration loaded from environment variables.
@@ -24,6 +26,14 @@ func Load() *Config {
 		LLMAPIKey:   getEnv("LLM_API_KEY", ""),
 		LLMUserID:   getEnv("LLM_USER_ID", ""),
 	}
+}
+
+// Validate checks that security-sensitive URLs use HTTPS.
+func (c *Config) Validate() error {
+	if c.LLMBaseURL != "" && !strings.HasPrefix(c.LLMBaseURL, "https://") {
+		return fmt.Errorf("config: LLM_BASE_URL must use https:// (got %q)", c.LLMBaseURL)
+	}
+	return nil
 }
 
 func getEnv(key, fallback string) string {

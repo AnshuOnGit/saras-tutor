@@ -3,7 +3,6 @@ package studio
 import (
 	"bytes"
 	"context"
-	"crypto/tls"
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
@@ -88,8 +87,15 @@ RESPOND WITH ONLY THIS JSON (no code fences, no extra text):
 TRANSCRIPTION RULES:
 1. Reproduce the FULL text word-for-word EXACTLY as it appears in the image. Do NOT summarise, paraphrase, or add ANY of your own words.
 2. Reproduce ALL answer options exactly: (A), (B), (C), (D) or (1), (2), (3), (4).
-3. For math use LaTeX: inline $...$ and display $$...$$. Use \frac, \sqrt, \int, \sum, \vec, \overrightarrow, \hat, etc.
-4. NEVER use \( \) or \[ \] delimiters.
+3. For math use KaTeX-safe LaTeX ONLY:
+   - Inline: single $ delimiters — $F = ma$
+   - Display: double $$ on own line — $$\frac{1}{2}mv^2$$
+   - NEVER use \( \), \[ \], \begin{align}, \begin{equation}, \begin{cases}, \begin{array}, or any environment block.
+   - Use ONLY standard commands: \frac{}{}, \sqrt{}, ^{}, _{}, \vec{}, \hat{}, \overrightarrow{}, \int, \sum, \prod, \sin, \cos, \tan, \log, \ln, \lim, \text{}.
+   - Balance ALL braces {} and parentheses ().
+   - Prefer ASCII operators (- not Unicode −, >= not ≥) unless inside $ delimiters.
+   - For piecewise expressions, use separate $$ per branch in a bullet list.
+4. NEVER nest dollar signs, place math inside backtick code blocks, or use \tag/\label/\newcommand.
 5. For diagrams/figures: describe under "## Diagram" with all labels, vertices, segments, angles, and measurements visible.
 6. For tables: use Markdown tables.
 7. Keep output concise — no preamble like "The problem statement is" or "The extracted content is".
@@ -121,9 +127,6 @@ type extractionResponse struct {
 // httpFetchClient is used to download remote image URLs.
 var httpFetchClient = &http.Client{
 	Timeout: 20 * time.Second,
-	Transport: &http.Transport{
-		TLSClientConfig: &tls.Config{InsecureSkipVerify: true},
-	},
 }
 
 // fetchImageAsDataURI normalises an image reference so it can be handed to

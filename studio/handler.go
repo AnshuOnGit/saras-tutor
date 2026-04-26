@@ -374,6 +374,82 @@ func (h *Handler) Chat(c *gin.Context) {
 	var systemPrompt string
 	var userPrompt string
 
+	// Shared KaTeX rendering rules appended to every system prompt.
+	const katexRules = `
+
+KATEX MATH RENDERING — MANDATORY RULES
+(violations will be rejected by the rendering pipeline)
+
+DELIMITER RULES:
+• Inline math: single dollar signs — $F = ma$
+• Display math: double dollar signs on their OWN line with blank lines around them:
+
+  $$E = \frac{1}{2}mv^2$$
+
+• NEVER use \( \), \[ \], or \begin{equation}.
+• Every opening $ must have a closing $. Every opening $$ must have a closing $$.
+• NEVER nest dollar signs (e.g. $ a $ b $ ) — each expression gets its own delimiters.
+• NEVER place math inside code blocks (backticks).
+• EVERY variable, symbol, or expression — no matter how short — MUST be wrapped in $ delimiters. Never write bare m, v, F, θ, α, etc. without $ wrapping.
+
+SYNTAX RULES:
+• Keep expressions KaTeX-safe: use \frac{}{}, \sqrt{}, ^{}, _{}, \text{}, \vec{}, \hat{}, \overrightarrow{}, \sin, \cos, \tan, \log, \ln, \lim, \sum, \int, \prod.
+• Balance ALL braces {} and parentheses (). No dangling \frac{, unclosed {, or stray }.
+• AVOID multi-line environments: NO \begin{align}, \begin{equation}, \begin{cases}, \begin{array}, \begin{matrix}. Instead, write separate single-line $$ expressions.
+• For piecewise/cases, use a bullet list with one $$ per branch.
+• Do NOT use \tag{}, \label{}, \ref{}, \eqref{}, \nonumber, \notag.
+• Do NOT mix HTML tags inside math delimiters.
+
+MARKDOWN STRUCTURE RULES:
+• Use ## headings on their OWN line with a blank line before and after.
+• Use --- on its OWN line with blank lines before and after.
+• Bullet lists: each - item on its own line.
+• NEVER concatenate headings, rules, or bullets on one line (e.g. NEVER "--- ## Solution" or "text ## Answer").
+
+CONCRETE EXAMPLES — follow these EXACTLY:
+
+✓ GOOD (equations on own lines, every symbol wrapped):
+Using conservation of energy from $A$ to $B$, with height $h_B = l$:
+
+$$\frac{1}{2}mv_0^2 = \frac{1}{2}mv_B^2 + mgl$$
+
+Solving for $v_B^2$:
+
+$$v_B^2 = v_0^2 - 2gl = 5gl - 2gl = 3gl$$
+
+Therefore the kinetic energy at $B$ is:
+
+$$KE_B = \frac{1}{2}m(3gl) = \frac{3}{2}mgl$$
+
+✗ BAD (bare symbols, no delimiters, stacked single-symbol lines):
+v
+0
+2
+=
+5
+g
+l
+KE
+B
+=
+1
+2
+m
+v
+B
+2
+
+✗ BAD (equation without dollar delimiters):
+v_B^2 = v_0^2 - 2gl = 3gl
+
+✗ BAD (headings on same line):
+--- ## Solution ### Step 1
+
+PASS/FAIL POLICY — the renderer will enforce these:
+✗ REJECT: bare math without $ delimiters, unbalanced braces, \begin{align/equation/cases/array/matrix}, \( \), \[ \], nested $, math in code blocks, headings not on own line.
+✗ DOWNGRADE TO PLAIN TEXT: any expression with unsupported commands (\tag, \label, \DeclareMathOperator, \newcommand).
+✓ ACCEPTED: single-line $ and $$ with balanced braces, standard KaTeX commands only, proper markdown structure.`
+
 	switch req.Intent {
 	case "hint":
 		systemPrompt = `You are an expert JEE/NEET tutor who gives pedagogical hints WITHOUT revealing the full answer.
@@ -383,11 +459,7 @@ RULES:
 2. Ask a guiding question that nudges the student toward the right approach.
 3. Do NOT show the full solution or final answer.
 4. Keep it to 3-5 sentences.
-5. If the student asks follow-up questions, give progressively stronger hints.
-
-LATEX FORMATTING — CRITICAL:
-- ALL math MUST be wrapped in dollar-sign delimiters. NEVER write bare LaTeX.
-- Inline: $F = ma$  Display (own line): $$E = \frac{1}{2}mv^2$$`
+5. If the student asks follow-up questions, give progressively stronger hints.` + katexRules
 
 		var questionText string
 		for _, s := range slots {
@@ -414,11 +486,7 @@ RULES:
    ## Strengths
    ## Errors
    ## Missing Steps
-   ## Next Steps
-
-LATEX FORMATTING — CRITICAL:
-- ALL math MUST be wrapped in dollar-sign delimiters. NEVER write bare LaTeX.
-- Inline: $F = ma$  Display (own line): $$E = \frac{1}{2}mv^2$$`
+   ## Next Steps` + katexRules
 
 		var questionText, attemptText string
 		for _, s := range slots {
@@ -436,14 +504,8 @@ LATEX FORMATTING — CRITICAL:
 
 	case "followup":
 		systemPrompt = `You are an expert JEE/NEET tutor. Continue the conversation helpfully.
-
-LATEX FORMATTING — CRITICAL:
-1. ALL math expressions MUST be wrapped in dollar-sign delimiters.
-2. Inline math: $E = mc^2$
-3. Display math on its own line: $$\frac{1}{2}mv^2 = mgh$$
-4. NEVER write bare LaTeX without $ or $$ delimiters.
-5. Use Markdown headings, bold, and bullet lists for structure.
-6. If the student asks for more detail, provide it. If they ask a new question, solve or hint as appropriate.`
+Use Markdown headings, bold, and bullet lists for structure.
+If the student asks for more detail, provide it. If they ask a new question, solve or hint as appropriate.` + katexRules
 		userPrompt = req.Message
 
 	default: // "solve" or empty
@@ -454,13 +516,7 @@ RULES:
 2. Bold the final answer: **Answer: $...$**
 3. If the question involves a diagram described in text, acknowledge the description.
 4. Be precise with units and significant figures.
-5. Use Markdown headings for sections (## Given, ## Approach, ## Solution, ## Answer).
-
-LATEX FORMATTING — CRITICAL:
-- ALL math MUST be wrapped in dollar-sign delimiters. NEVER write bare LaTeX.
-- Inline math: $v^2 = u^2 + 2as$
-- Display math (own line): $$\frac{1}{2}mv^2 = mgh$$
-- Every equation, variable, and formula must use $ or $$ delimiters.`
+5. Use Markdown headings for sections (## Given, ## Approach, ## Solution, ## Answer).` + katexRules
 
 		var questionText string
 		for _, s := range slots {

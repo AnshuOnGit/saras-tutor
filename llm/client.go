@@ -5,7 +5,6 @@ import (
 	"bufio"
 	"bytes"
 	"context"
-	"crypto/tls"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -19,11 +18,8 @@ import (
 // causes the call to fail with ErrLowConfidence.
 const MinConfidence = 0.9
 
-// insecureHTTPClient skips TLS certificate verification (for local proxy use only).
-var insecureHTTPClient = &http.Client{
-	Transport: &http.Transport{
-		TLSClientConfig: &tls.Config{InsecureSkipVerify: true},
-	},
+var httpClient = &http.Client{
+	Transport: &http.Transport{},
 }
 
 // Usage captures token counts from an API response.
@@ -214,7 +210,7 @@ func (c *Client) Complete(ctx context.Context, messages []ChatMessage) (*Complet
 	c.setHeaders(req)
 
 	httpStart := time.Now()
-	resp, err := insecureHTTPClient.Do(req)
+	resp, err := httpClient.Do(req)
 	httpDuration := time.Since(httpStart)
 	if err != nil {
 		slog.Error("llm: HTTP request failed",
@@ -363,7 +359,7 @@ func (c *Client) doStreamRequest(ctx context.Context, body []byte, attempt int, 
 	c.setHeaders(req)
 
 	httpStart := time.Now()
-	resp, err := insecureHTTPClient.Do(req)
+	resp, err := httpClient.Do(req)
 	if err != nil {
 		slog.Error("llm: stream HTTP failed",
 			"model", c.Model,

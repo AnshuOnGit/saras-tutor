@@ -327,7 +327,6 @@ Frontend on `http://localhost:5174`, proxies `/api` → `:8090`.
 ## Notes
 
 - Migrations are idempotent bootstrap-style SQL (`CREATE TABLE IF NOT EXISTS`, `ALTER TABLE ... ADD COLUMN IF NOT EXISTS`).
-- The LLM client uses `InsecureSkipVerify` TLS for proxy environments.
 - The `user_id` field is a placeholder for OAuth integration — currently `"anonymous"` from the frontend.
 - The OCR extraction prompt is strictly transcription-only — it explicitly prohibits solving, explaining, or interpreting the question content.
 - Workspace slot text is editable. The edited text is sent directly to the LLM; the DB-stored version is only a fallback.

@@ -20,6 +20,10 @@ func main() {
 	_ = godotenv.Load()
 
 	cfg := config.Load()
+	if err := cfg.Validate(); err != nil {
+		slog.Error("invalid configuration", "error", err)
+		os.Exit(1)
+	}
 
 	pool, err := db.NewPool(cfg.DatabaseURL)
 	if err != nil {
