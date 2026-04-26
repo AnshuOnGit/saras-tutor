@@ -58,7 +58,10 @@ func main() {
 	api.GET("/extractions", h.ListExtractions)
 	api.POST("/chat", h.Chat)
 
-	port := os.Getenv("STUDIO_PORT")
+	port := os.Getenv("PORT")
+	if port == "" {
+		port = os.Getenv("STUDIO_PORT")
+	}
 	if port == "" {
 		port = "8090"
 	}
