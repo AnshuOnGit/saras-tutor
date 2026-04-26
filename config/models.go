@@ -316,37 +316,6 @@ func GetModelsByCategory(category ModelCategory) []ModelExpert {
 	return out
 }
 
-// GetAllSolverModels returns models from all Solver sub-categories,
-// sorted by (category, priority).
-func GetAllSolverModels() []ModelExpert {
-	var out []ModelExpert
-	for _, m := range ModelRegistry {
-		if IsSolverCategory(m.Category) {
-			out = append(out, m)
-		}
-	}
-	sort.SliceStable(out, func(i, j int) bool {
-		if out[i].Category != out[j].Category {
-			return out[i].Category < out[j].Category
-		}
-		return out[i].Priority < out[j].Priority
-	})
-	return out
-}
-
-// GetModelByID returns the first model matching the given NVIDIA NIM ID, or
-// nil if not found. Note: some IDs (e.g. Mistral Small) appear in multiple
-// categories — this returns the first match in registry order. For category-
-// specific lookup, use ResolveModelForCategory.
-func GetModelByID(id string) *ModelExpert {
-	for i := range ModelRegistry {
-		if ModelRegistry[i].ID == id {
-			return &ModelRegistry[i]
-		}
-	}
-	return nil
-}
-
 // GetDefault returns the highest-priority (lowest-Priority-number) model
 // for a category, or nil if the category has no entries.
 func GetDefault(category ModelCategory) *ModelExpert {
@@ -361,11 +330,6 @@ func GetDefault(category ModelCategory) *ModelExpert {
 		}
 	}
 	return best
-}
-
-// GetRecommended is an alias for GetDefault, kept for backward compatibility.
-func GetRecommended(category ModelCategory) *ModelExpert {
-	return GetDefault(category)
 }
 
 // CategoryListing groups models by category for UI pickers.
@@ -393,50 +357,6 @@ func ListByCategory() []CategoryListing {
 		})
 	}
 	return out
-}
-
-// ── Task-based selection ─────────────────────────────────────────────
-
-// SelectModelForTask picks the best solver model ID given a difficulty and subject.
-// Returns the NVIDIA NIM model ID string ready for llm.NewClient().
-//
-// Logic:
-//
-//	isVision                 → Vision default
-//	difficulty >= 4          → Solver:Level3 default
-//	difficulty >= 3          → Solver:Level2 default
-//	subject is biology/chem  → Solver:Level1 default
-//	default                  → Solver:Level2 default
-func SelectModelForTask(difficulty int, subject string, isVision bool) string {
-	if isVision {
-		if m := GetDefault(CategoryVision); m != nil {
-			return m.ID
-		}
-	}
-
-	if difficulty >= 4 {
-		if m := GetDefault(CategorySolverLevel3); m != nil {
-			return m.ID
-		}
-	}
-
-	if difficulty >= 3 {
-		if m := GetDefault(CategorySolverLevel2); m != nil {
-			return m.ID
-		}
-	}
-
-	switch subject {
-	case "biology", "Biology", "chemistry", "Chemistry":
-		if m := GetDefault(CategorySolverLevel1); m != nil {
-			return m.ID
-		}
-	}
-
-	if m := GetDefault(CategorySolverLevel2); m != nil {
-		return m.ID
-	}
-	return ModelRegistry[0].ID
 }
 
 // ── Default model accessors (used at startup to build LLM clients) ───
@@ -475,35 +395,4 @@ func DefaultRouterModel() string {
 		return m.ID
 	}
 	return "meta/llama-3.3-70b-instruct"
-}
-
-// RetryModelIDs returns the IDs of all solver models (all 3 levels),
-// sorted by (category, priority), for the retry picker.
-func RetryModelIDs() []string {
-	models := GetAllSolverModels()
-	ids := make([]string, 0, len(models))
-	for _, m := range models {
-		ids = append(ids, m.ID)
-	}
-	return ids
-}
-
-// ResolveModelForCategory returns a model ID to use for the given category.
-// If preferred is non-empty AND exists in the registry AND belongs to the
-// category, it is returned as-is. Otherwise the category default is used.
-// This is the recommended entry point when the frontend passes a user-picked
-// model that needs validation against a specific role.
-func ResolveModelForCategory(category ModelCategory, preferred string) string {
-	if preferred != "" {
-		for i := range ModelRegistry {
-			m := &ModelRegistry[i]
-			if m.ID == preferred && m.Category == category {
-				return m.ID
-			}
-		}
-	}
-	if m := GetDefault(category); m != nil {
-		return m.ID
-	}
-	return ""
 }

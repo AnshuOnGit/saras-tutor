@@ -1,446 +1,333 @@
-# Saras Tutor
+# Saras Studio
 
-A full-stack, agent-orchestrated tutoring assistant for JEE/NEET-style questions (text + image), with progressive hints, attempt evaluation, solution verification, model retry, and persistent learning memory.
 
-## Implemented Features
+￼
+ bashfrontend
+ go
+ npmfrontend
+ bash
+ bash
+1 Hidden Terminal
+CHAT
+DOCKER PERMISSION DENIED ERROR RESOLUTION
+Identified inline markdown formatting issues
+The problem is the LLM outputs --- ## Solution and ## Answer inline without line breaks, so the markdown parser treats them as regular text. I'll fix the preprocessor to ensure block-level markdown elements (---, ##, -) get their own lines.
 
-- **Deterministic multi-agent orchestration** via a Router agent (`new_question`, `more_help`, `show_solution`, `submit_attempt`, `retry_model`, `close`).
-- **Streaming responses over SSE** from backend to frontend.
-- **Image question support**:
-  - Multipart image upload
-  - Server-side image resize (max 1568 px longest side)
-  - Image stored in Postgres (`BYTEA`)
-  - Vision extraction via `image_extraction` agent
-- **Progressive pedagogy**:
-  - Hint levels 1 → 2 → 3
-  - Escalate to full solution only when requested
-- **Solution quality gate**:
-  - Verifier scores solver output (0.0–1.0)
-  - Auto retry with original image if score below threshold
-  - If still low, frontend model-picker is shown
-- **Question validation**:
-  - Rejects non-PCMB questions (Physics/Chemistry/Mathematics/Biology)
-  - Safe fallback: LLM failure → accepts question so student isn't blocked
-- **Taxonomy-driven question parsing (4 subjects, ~50 chapters, ~530 topics)**:
-  - Covers full JEE (Mains + Advanced) and NEET official syllabi
-  - `chapter`, `topics`, `difficulty` (1–4), `variables` extraction
-  - All names canonicalized against seed taxonomy at parse time
-  - Inference fallback (topic → chapter → subject) when LLM is imprecise
-- **Attempt evaluation**:
-  - Students submit text or photos of their work between hints
-  - Evaluator scores against expected progress for the current hint level
-  - Structured rubric: score, strengths, errors, missing steps, next guidance
-  - Correct attempts (≥ 80%) auto-close the interaction
-- **Interaction memory (short-term)**:
-  - Tracks state machine (`new` → `hint_1` → `hint_2` → `hint_3` → `waiting_for_attempt` → `solved`/`closed`)
-  - Stores FK references: `subject_id`, `topic_ids` (many-to-many via junction table)
-- **Student profile memory (long-term)**:
-  - `student_profiles` with `name`, `user_id`, `total_questions`, `aggr_stats`
-  - `aggr_stats` is one entry per conversation, each containing question-level records
-- **Frontend UX support**:
-  - Hint action buttons
-  - Attempt submission (text + photo)
-  - Model retry picker
-  - Markdown + KaTeX + Mermaid rendering
+Read Markdown.jsx
+
+Edited
+Markdown.jsx+10-0
+The preprocessor now forces line breaks before block-level markdown elements that the LLM squashes onto one line:
+
+--- ## Solution → --- + newline + ## Solution
+text ## Answer → text + newline + ## Answer
+text - **Step 1** → text + newline + - **Step 1**
+text **Answer: → text + newline + **Answer:
+This runs before the LaTeX fixing pass, so headings, horizontal rules, and bullet lists render as proper block elements.
+
+Restore Checkpoint
+add node_modules into .gitignore and .env and any other files that you think should not be pushed
+
+Read .gitignore
+
+Edited
+.gitignore+22-0
+Now remove any of those files that are already tracked:
+
+git rm -r --cached studio/frontend/node_modules studio/frontend/dist studio/frontend/node_modules/.vite .vscode .env 2>/dev/null; echo "done"
+git status --short | head -20
+Updated .gitignore with:
+
+An AI-powered **JEE/NEET problem-solving workspace** built on **NVIDIA NIM** LLMs. Upload question images, extract text with vision models, edit the extracted text, then solve, get hints, or evaluate attempts — all streamed in real time with beautifully rendered LaTeX.
 
 ---
 
-## Agent Pipeline
+## Features
 
-### Topic Extraction (`question_parser`)
+- **Multi-model OCR** — Browse NVIDIA NIM vision models grouped by provider. Extract text from question images using any model, as many times as needed.
+- **Editable extractions** — Extracted text is rendered as Markdown + LaTeX in workspace slots. Click "✏️ Edit" to fix OCR mistakes or add missing details (diagram angles, values, etc.) before sending to the solver.
+- **Side-by-side image + text** — Expand any extraction card to see the original image alongside the rendered extracted text.
+- **Drag-and-drop workspace** — Drag extraction cards into the workspace. Label each as **Question** or **Attempt** (togglable). Build multi-card workspaces for evaluation.
+- **Intent-based actions**:
 
-Parses raw question text into structured metadata using the full JEE/NEET taxonomy.
+  | Intent | What it does | Required slots |
+  |--------|-------------|----------------|
+  | 🧠 **Solve** | Full step-by-step solution with LaTeX | ≥ 1 Question |
+  | 💡 **Hint** | Pedagogical hint without revealing the answer | ≥ 1 Question |
+  | 📝 **Evaluate** | Score attempt vs question (0–1) with structured rubric | 1 Question + 1 Attempt |
 
-- **Taxonomy**: Built at startup from `db.BuildTaxonomy()` — 4 subjects, ~50 chapters, ~530 topics from official syllabi
-- **LLM prompt**: Includes the entire taxonomy listing so the model picks exact canonical names
-- **Normalization**: All names lowercased with punctuation stripped (`normalize()`) for fuzzy matching
-- **Inference chain**: If the LLM returns a topic but not a chapter, `topicToChapterMap` infers it; if chapter is known but subject isn't, `chapterToSubject` fills it in
-- **Fallback**: On LLM failure, returns the raw text with empty taxonomy fields — downstream agents still work
-
-**Output** (`ParsedQuestion`):
-
-| Field | Type | Example |
-|-------|------|---------|
-| `subject` | `string` | `"Physics"` |
-| `chapter` | `string` | `"Kinematics"` |
-| `topics` | `[]string` | `["Projectile motion", "Uniform circular motion"]` |
-| `difficulty` | `int` | `2` (1=easy, 2=medium, 3=hard, 4=very hard) |
-| `question` | `string` | Cleaned question text |
-| `variables` | `map[string]string` | `{"mass": "2 kg", "velocity": "10 m/s"}` |
-
-### Hint Generation (`hint`)
-
-Delivers progressive, pedagogically-graded hints without revealing the answer.
-
-| Level | Strategy | Detail |
-|-------|----------|--------|
-| **1** | Gentle nudge | Identify relevant concept/formula, ask a guiding question (3–5 sentences) |
-| **2** | Stronger hint | Outline approach, show first 1–2 setup steps, leave main work to student |
-| **3** | Detailed walkthrough | Show most steps, student completes only the final calculation |
-
-- Each level has a **distinct system prompt** with explicit rules (e.g., "Do NOT reveal the answer")
-- Supports **vision**: at level 3, the original image is attached so the LLM can reference diagrams/circuits
-- All output uses Markdown with `$...$` / `$$...$$` for LaTeX math
-- After each hint, the system transitions to `waiting_for_attempt` and invites the student to try
-
-### Attempt Evaluation (`attempt_evaluator`)
-
-Scores student work submitted between hints against rubric criteria per hint level.
-
-- Accepts **text or photos** of handwritten work (vision extraction for images)
-- Evaluates against **expected intermediate goals** per hint level:
-  - After hint 1: student identifies concept/formula + sets up approach
-  - After hint 2: first 1–2 steps completed correctly
-  - After hint 3: most of solution done, only final calculation remains
-
-**Scoring**:
-
-| Score | Meaning |
-|-------|---------|
-| 1.0 | Fully correct |
-| 0.7–0.9 | Mostly correct, minor errors |
-| 0.4–0.6 | Partially correct, significant error |
-| 0.1–0.3 | Some understanding but largely wrong |
-| 0.0 | No progress or completely wrong |
-
-**Output** (`EvaluatorResult`):
-
-| Field | Type | Description |
-|-------|------|-------------|
-| `correct` | `bool` | Overall correctness |
-| `score` | `float64` | 0.0–1.0 |
-| `strengths` | `[]string` | What the student did well |
-| `errors` | `[]string` | Specific mistakes found |
-| `missing_steps` | `[]string` | Steps the student skipped |
-| `next_guidance` | `string` | Tailored 1-sentence advice |
-| `hint_consumed` | `int` | Which hint level was active |
-
-- If `correct && score ≥ 0.8`: interaction auto-closes, student gets congratulations
-- Otherwise: stays in `waiting_for_attempt`, student can retry, ask for more help, or request the solution
-
-### Solution Generation (`solver` + `verifier`)
-
-Full step-by-step solution with quality verification and automatic retry.
-
-**Solver**:
-- Streams a complete worked solution with strict formatting (Markdown + LaTeX + Mermaid)
-- Supports vision mode (image attached alongside question for diagrams/circuits)
-- Bold key results: `**Answer: $...$**`
-
-**Verifier** (post-solver quality gate):
-
-| Score | Meaning |
-|-------|---------|
-| 0.9–1.0 | Correct final answer, sound reasoning |
-| 0.7–0.8 | Correct approach but minor intermediate errors |
-| 0.5–0.6 | Right approach but wrong answer, or missing key steps |
-| 0.0–0.4 | Fundamentally wrong approach |
-
-**Quality threshold**: `MinVerifierScore = 0.6`
-
-**Retry flow**:
-1. Solver generates solution → Verifier scores it
-2. If score < threshold and image is available → retry solver with original image attached
-3. If still low → emit model picker so student can choose an alternative LLM
-4. Student selects model → solver reruns with that model → verify again
+- **Multi-turn conversation** — Follow up with clarifying questions. Full conversation history is sent with each request.
+- **Streamed SSE responses** — Solutions stream token-by-token, rendered as Markdown + KaTeX in real time.
+- **Cloudflare R2 storage** — Images uploaded to R2 with public URLs. Graceful fallback to inline data URIs when R2 is not configured.
+- **LaTeX preprocessing** — Frontend preprocessor catches bare LaTeX from LLMs and wraps it in proper `$`/`$$` delimiters. Also normalizes inline markdown headings and bullet points.
 
 ---
 
-## High-Level Architecture
+## Workspace Flow
 
-```mermaid
-flowchart LR
-  U[Frontend React/Vite] -->|POST /chat| H[Chat Handler Gin]
-  H --> R[Router Agent]
-
-  R --> IE[Image Extraction Agent]
-  R --> HV[Question Validator]
-  R --> QP[Question Parser]
-  R --> HA[Hint Agent]
-  R --> SA[Solver Agent]
-  R --> VA[Verifier Agent]
-
-  H <--> DB[(PostgreSQL)]
-  IE <--> DB
-  R <--> DB
-
-  IE --> LLM[(LLM API)]
-  HV --> LLM
-  QP --> LLM
-  HA --> LLM
-  SA --> LLM
-  VA --> LLM
-
-  H -->|SSE stream events| U
+```
+┌─────────────── LEFT PANEL ───────────────┐  ┌──────────────── RIGHT PANEL ─────────────────┐
+│                                          │  │                                               │
+│  🔍 OCR Models    🧠 Solver Models       │  │  📌 Workspace Slots                           │
+│  ┌──────────────────────────────────┐    │  │  ┌──────────┐  ┌──────────┐                   │
+│  │ Meta  ● Llama 3.2 90B Vision    │    │  │  │ 📋 Question│  │ ✍️ Attempt│                  │
+│  │ NVIDIA ○ Llama 3.2 NV Vision    │    │  │  │ rendered  │  │ rendered  │                  │
+│  └──────────────────────────────────┘    │  │  │ [✏️ Edit] │  │ [✏️ Edit] │                  │
+│                                          │  │  └──────────┘  └──────────┘                   │
+│  📷 Drop image or click to upload        │  │                                               │
+│  ┌──────────────────────────────────┐    │  │  ┌─────────┐  ┌─────────┐  ┌───────────┐    │
+│  │ 🔍 Extract Text                  │    │  │  │ 🧠 Solve │  │ 💡 Hint  │  │ 📝 Evaluate│   │
+│  └──────────────────────────────────┘    │  │  └─────────┘  └─────────┘  └───────────┘    │
+│                                          │  │                                               │
+│  📋 Extractions (3)                      │  │  🤖 Step 1: Identify the forces acting on…    │
+│  ┌──────────────────────────────────┐    │  │     Since the ball is on an incline, we…      │
+│  │ Llama 3.2 90B  12:34 PM    ⛶    │    │  │                                               │
+│  │ A ball of mass 2 kg is thrown…   │    │  │  ┌──────────────────────────────────────────┐ │
+│  │ [＋ Add to workspace]  [⇥ Drag]  │    │  │  │ Ask a follow-up question…          Send  │ │
+│  └──────────────────────────────────┘    │  │  └──────────────────────────────────────────┘ │
+└──────────────────────────────────────────┘  └───────────────────────────────────────────────┘
 ```
 
+### User Flow
+
+1. **Browse models** — OCR and Solver models grouped by provider with priority-based defaults.
+2. **Extract text** — Upload an image. It's resized (max 1568px), stored in R2, and processed by the selected OCR model. The extraction prompt is strictly transcription-only (no solving).
+3. **Build workspace** — Drag cards into the workspace. First card auto-labels as Question, subsequent as Attempt. Roles are togglable.
+4. **Review & edit** — Extracted text renders as Markdown + LaTeX. Click "✏️ Edit" to fix OCR errors or add diagram details the OCR missed (e.g. "angle ABC = 60°, mass = 2 kg"). The edited text is what the solver sees.
+5. **Choose intent** — Click Solve, Hint, or Evaluate.
+6. **Follow up** — Multi-turn conversation with full history context.
+
 ---
 
-## Request & Agent Flow
-
-### New Question (text/image)
+## Sequence Diagram
 
 ```mermaid
 sequenceDiagram
-  participant F as Frontend
-  participant CH as Chat Handler
-  participant R as Router
-  participant IE as Image Extraction
-  participant V as Validator
-  participant P as Parser
-  participant H as Hint
-  participant DB as Postgres
+  participant U as User
+  participant FE as Studio Frontend
+  participant BE as Studio Backend
+  participant R2 as Cloudflare R2
+  participant NIM as NVIDIA NIM API
 
-  F->>CH: POST /chat (new_question)
-  CH->>DB: get/create conversation, save user msg (+ image)
-  CH->>R: task + metadata
+  U->>FE: Upload image
+  FE->>BE: POST /api/extract (image + OCR model)
+  BE->>R2: Upload resized image
+  BE->>NIM: Vision extraction (transcription-only prompt)
+  NIM-->>BE: Extracted text (JSON)
+  BE->>BE: Persist extraction to DB
+  BE-->>FE: Extraction card
 
-  alt image present
-    R->>IE: extract text from image
-    IE-->>R: extracted markdown
-  end
+  U->>FE: Drag card to workspace, edit text if needed
+  U->>FE: Click "🧠 Solve"
+  FE->>BE: POST /api/chat {intent: solve, slots: [{id, role, text}]}
+  BE->>NIM: Solver LLM (streamed)
+  NIM-->>BE: Tokens
+  BE-->>FE: SSE token stream
+  FE-->>U: Rendered Markdown + LaTeX solution
 
-  R->>V: validate PCMB intent
-  V-->>R: valid/invalid
-
-  alt invalid
-    R-->>CH: rejection artifact
-    CH-->>F: SSE completed
-  else valid
-    R->>P: parse topic/subtopic/difficulty
-    P-->>R: parsed metadata
-    R->>DB: create interaction
-    R->>DB: append profile aggr_stats question under conversation
-    R->>H: dispatch hint level 1
-    H-->>CH: streamed hint tokens
-    CH-->>F: SSE artifacts + input-needed
-  end
+  U->>FE: Type follow-up question
+  FE->>BE: POST /api/chat {intent: followup, message: "...", history: [...]}
+  BE->>NIM: Continue conversation
+  NIM-->>BE: Tokens
+  BE-->>FE: SSE token stream
 ```
 
-### Solver + Verifier + Model Retry
+---
+
+## Architecture
 
 ```mermaid
-flowchart TD
-  A[show_solution or hint_3 escalation] --> B[Solver pass 1]
-  B --> C[Verifier pass 1]
-  C -->|score >= threshold| D[Complete + close interaction as solved]
-  C -->|score < threshold| E{Image available?}
-  E -->|Yes| F[Solver pass 2 with image]
-  F --> G[Verifier pass 2]
-  G -->|score >= threshold| D
-  G -->|score < threshold| H[Emit model picker input-needed]
-  E -->|No| H
-  H --> I[User selects retry model]
-  I --> J[Solver with selected model]
-  J --> C
+flowchart TB
+  subgraph Client
+    SF[Studio Frontend :5174]
+  end
+
+  subgraph Backend
+    SB[Studio Backend :8090]
+  end
+
+  subgraph External
+    NIM[(NVIDIA NIM API)]
+    R2[(Cloudflare R2)]
+    PG[(PostgreSQL)]
+  end
+
+  SF -->|/api/*| SB
+  SB --> NIM
+  SB --> R2
+  SB --> PG
 ```
 
 ---
 
-## Backend Modules
+## API Reference
 
-- `main.go`: bootstraps config, DB pool, migration, seed, Gin routes.
-- `handler/chat.go`: parses JSON or multipart input, persists user/assistant messages and images, constructs A2A task and streams SSE.
-- `handler/image_resize.go`: image downscale pipeline before persistence.
-- `agents/router.go`: deterministic orchestrator — dispatches based on action + interaction state.
-- `agents/image_extraction.go`: vision extraction with structured JSON output.
-- `agents/question_validator.go`: PCMB intent filtering.
-- `agents/question_parser.go`: taxonomy-driven structured metadata extraction + normalization.
-- `agents/hint.go`: progressive hint levels (1–3) with distinct prompts per level.
-- `agents/attempt_evaluator.go`: scores student work against rubric criteria per hint level.
-- `agents/solver.go`: full step-by-step solution generation with vision support.
-- `agents/verifier.go`: quality scoring and issue detection for solver output.
-- `db/migrate.go`: schema creation (fresh DB, no migration scripts).
-- `db/seed.go`: exhaustive JEE/NEET taxonomy seeder (4 subjects, ~50 chapters, ~530 topics).
-- `db/store.go`: all persistence logic.
-- `llm/client.go`: OpenAI-compatible chat + stream wrapper.
+Full OpenAPI 3.0 spec: [`swagger.yaml`](swagger.yaml)
+
+| Method | Path | Description |
+|--------|------|-------------|
+| `GET` | `/health` | Health check |
+| `GET` | `/api/models` | List NIM models (OCR & Solver categories) |
+| `POST` | `/api/extract` | Extract text from image with OCR model |
+| `GET` | `/api/extractions` | List extractions for a session + user |
+| `POST` | `/api/chat` | Workspace chat with intents (SSE stream) |
+
+### SSE Event Format
+
+```
+data: {"type":"token","text":"<chunk>"}
+data: [DONE]
+```
+
+### POST /api/chat — Request Body
+
+```json
+{
+  "session_id": "uuid",
+  "user_id": "user-id",
+  "model": "deepseek-ai/deepseek-r1",
+  "intent": "solve",
+  "slots": [
+    { "extraction_id": "uuid", "role": "question", "text": "edited text..." }
+  ],
+  "message": "",
+  "history": [
+    { "role": "user", "content": "..." },
+    { "role": "assistant", "content": "..." }
+  ]
+}
+```
+
+Key: the `text` field in each slot carries the user-edited extraction text. If empty, the backend falls back to the DB-stored version.
 
 ---
 
-## Current Data Model
+## Data Model
 
-### `interactions` (short-term memory)
-
-Stores question lifecycle and parsed metadata.
+### `extractions`
 
 | Column | Type | Description |
 |--------|------|-------------|
 | `id` | `TEXT PK` | UUID |
-| `conversation_id` | `TEXT FK` | References `conversations` |
-| `question_text` | `TEXT` | Original question |
-| `image_id` | `TEXT` | FK to `images` table (for vision retry) |
-| `subject_id` | `BIGINT FK` | References `subjects` |
-| `difficulty` | `INT` | 1–4 |
-| `problem_text` | `TEXT` | Cleaned parsed question text |
-| `state` | `TEXT` | `new\|hint_1\|hint_2\|hint_3\|waiting_for_attempt\|solved\|closed` |
-| `hint_level` | `INT` | 0–3 |
-| `exit_reason` | `TEXT` | How interaction was resolved |
-
-Topics are linked via the `interaction_topics` junction table (many-to-many).
-
-### `student_profiles` (long-term memory)
-
-| Column | Type | Description |
-|--------|------|-------------|
-| `user_id` | `TEXT PK` | Unique student identifier |
-| `name` | `TEXT` | Display name |
-| `total_questions` | `INT` | Lifetime count |
-| `aggr_stats` | `JSONB` | Per-conversation question stats |
-
-`aggr_stats` shape:
-
-```json
-[
-  {
-    "conversation_id": "conv-123",
-    "questions": [
-      {
-        "topic_subtopics": ["Kinematics:Projectile motion", "Kinematics:Uniform circular motion"],
-        "difficulty_level": 2,
-        "hint_level": 1,
-        "self_solved": true
-      }
-    ]
-  }
-]
-```
-
-### `student_attempts` (attempt tracking)
-
-| Column | Type | Description |
-|--------|------|-------------|
-| `attempt_id` | `BIGSERIAL PK` | Auto-increment |
-| `interaction_id` | `TEXT FK` | References `interactions` |
-| `user_id` | `TEXT` | Student |
-| `hint_index` | `INT` | 1–3 (which hint was active) |
-| `student_message` | `TEXT` | Student's submitted work |
-| `evaluator_json` | `JSONB` | Structured rubric output |
-
----
-
-## API
-
-### `GET /health`
-
-Returns:
-
-```json
-{"status":"ok"}
-```
-
-### `POST /chat`
-
-Supports:
-- `application/json`
-- `multipart/form-data` (with `image` file)
-
-#### JSON request example
-
-```json
-{
-  "user_id": "test-user",
-  "session_id": "session-1",
-  "action": "new_question",
-  "message": {
-    "content_type": "text",
-    "text": "A particle is thrown..."
-  }
-}
-```
-
-#### Actions
-
-- `new_question` — validate → parse → create interaction → hint 1
-- `more_help` — escalate to next hint level (or solver if at level 3)
-- `show_solution` — full solution via solver + verifier
-- `submit_attempt` — evaluate student work, auto-close if ≥ 80%
-- `retry_model` (requires `model`) — re-solve with alternative LLM
-- `close` — mark interaction as closed, record exit reason
-
-#### Streaming response (SSE event types)
-
-- `status`
-- `artifact`
-- `transition`
-- `metadata`
-- `error`
-- `new_turn` (used when retrying solver pass)
+| `session_id` | `TEXT` | Client session |
+| `user_id` | `TEXT` | User identifier |
+| `image_url` | `TEXT` | R2 public URL or data URI |
+| `extracted_text` | `TEXT` | OCR result |
+| `model_id` | `TEXT` | NIM model used |
+| `created_at` | `TIMESTAMPTZ` | Timestamp |
 
 ---
 
 ## Local Setup
 
-## 1) Start Postgres
+### 1) Start Postgres
 
 ```bash
 docker compose up -d
 ```
 
-## 2) Configure environment
+### 2) Configure environment
 
 ```bash
 cp .env.example .env
 ```
 
-Set required values in `.env`:
-- `LLM_API_KEY`
-- `LLM_BASE_URL` (or keep default)
-- `LLM_USER_ID` (if your proxy requires it)
+Set required values — see [Environment Variables](#environment-variables).
 
-## 3) Run backend
+### 3) Run Backend
 
 ```bash
-go run main.go
+go run cmd/studio/main.go
 ```
 
-Backend listens on `http://localhost:8080`.
+Backend on `http://localhost:8090`.
 
-## 4) Run frontend
+### 4) Run Frontend
 
 ```bash
-cd frontend
-npm install
-npm run dev
+cd studio/frontend && npm install && npm run dev
 ```
 
-Frontend runs on `http://localhost:5173` and proxies `/chat` + `/health` to backend.
+Frontend on `http://localhost:5174`, proxies `/api` → `:8090`.
 
 ---
 
 ## Environment Variables
 
-- `PORT` (default `8080`)
-- `DATABASE_URL`
-- `LLM_BASE_URL`
-- `LLM_API_KEY`
-- `LLM_USER_ID`
-- `OPENAI_MODEL_DEFAULT`
-- `VISION_MODEL`
-- `RETRY_MODELS` (comma-separated, e.g. `gpt-5,gpt-4,gemini`)
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `STUDIO_PORT` | `8090` | Server port |
+| `DATABASE_URL` | — | Postgres connection URL |
+| `LLM_BASE_URL` | `https://integrate.api.nvidia.com/v1` | NVIDIA NIM endpoint |
+| `LLM_API_KEY` | — | API key for NIM |
+| `LLM_USER_ID` | — | Optional user ID for proxy routing |
+| `R2_ACCESS_KEY_ID` | — | Cloudflare R2 access key |
+| `R2_SECRET_ACCESS_KEY` | — | Cloudflare R2 secret key |
+| `R2_ENDPOINT` | — | R2 S3-compatible endpoint |
+| `R2_BUCKET` | — | R2 bucket name |
+| `R2_PUBLIC_BASE_URL` | — | Public URL base for uploaded objects |
+
+> R2 variables are optional — when missing, uploaded images use inline data URIs.
 
 ---
 
-## Notes / Current Scope
+## Project Structure
 
-- Validation supports PCMB subjects, while structured topic taxonomy is currently most detailed for Physics.
-- Migrations are currently bootstrap-style SQL in code (not an external migration framework).
-- LLM client currently uses an insecure TLS transport (`InsecureSkipVerify`) intended for controlled/proxy environments.
-
----
-
-## Quick Project Structure
-
-```text
-.
-├── a2a/
-├── agents/
-├── config/
-├── db/
-├── handler/
-├── llm/
-├── middleware/
-├── models/
-├── frontend/
-├── main.go
-└── docker-compose.yml
 ```
+.
+├── cmd/studio/main.go          # Entrypoint (port 8090)
+├── swagger.yaml                # OpenAPI 3.0 spec
+├── docker-compose.yml          # Postgres
+│
+├── studio/
+│   ├── handler.go              # REST handlers: models, extract, extractions, chat
+│   └── extraction.go           # Image resize, vision extraction, LaTeX/JSON utils
+│
+├── studio/frontend/            # React 19 + Vite SPA (port 5174)
+│   └── src/
+│       ├── App.jsx             #   Workspace UI (model picker, upload, drag-drop, chat)
+│       ├── index.css           #   Dark theme styles
+│       └── components/
+│           └── Markdown.jsx    #   react-markdown + KaTeX + remark-gfm + LaTeX preprocessor
+│
+├── config/
+│   ├── config.go               # Environment config loader
+│   └── models.go               # NIM model registry (~30 models, 6 categories)
+│
+├── db/
+│   ├── pool.go                 # pgxpool connection
+│   └── migrate.go              # Schema bootstrap (extractions table)
+│
+├── llm/
+│   └── client.go               # OpenAI-compatible LLM client (streaming + non-streaming)
+│
+├── middleware/
+│   ├── cors.go                 # CORS middleware
+│   └── request_id.go           # X-Request-ID middleware
+│
+└── storage/
+    └── r2.go                   # Cloudflare R2 upload client (AWS SDK v2)
+```
+
+---
+
+## Tech Stack
+
+| Layer | Technology |
+|-------|-----------|
+| Backend | Go 1.22+, Gin, pgx v5 |
+| Frontend | React 19, Vite 6, react-markdown, remark-math, rehype-katex |
+| LLM | NVIDIA NIM (OpenAI-compatible API) |
+| Database | PostgreSQL 16 |
+| Storage | Cloudflare R2 (S3-compatible) |
+| Rendering | KaTeX (LaTeX), remark-gfm (tables, strikethrough) |
+
+---
+
+## Notes
+
+- Migrations are idempotent bootstrap-style SQL (`CREATE TABLE IF NOT EXISTS`, `ALTER TABLE ... ADD COLUMN IF NOT EXISTS`).
+- The LLM client uses `InsecureSkipVerify` TLS for proxy environments.
+- The `user_id` field is a placeholder for OAuth integration — currently `"anonymous"` from the frontend.
+- The OCR extraction prompt is strictly transcription-only — it explicitly prohibits solving, explaining, or interpreting the question content.
+- Workspace slot text is editable. The edited text is sent directly to the LLM; the DB-stored version is only a fallback.

@@ -1,0 +1,364 @@
+openapi: 3.0.3
+info:
+  title: Saras Studio API
+  description: |
+    REST API for **Saras Studio** — an AI-powered workspace for JEE/NEET problem
+    solving built on NVIDIA NIM models.
+
+    Studio lets users:
+    - Browse available OCR and Solver models grouped by provider
+    - Upload images and extract text via vision models (OCR)
+    - Drop extracted cards into a workspace, label them as **Question** or **Attempt**
+    - Solve, get hints, or evaluate attempts using any solver model
+    - Continue multi-turn conversations with follow-up questions
+    - Provide additional context that OCR may have missed (diagram details, angles, etc.)
+
+    All chat responses are streamed as **Server-Sent Events (SSE)**.
+  version: 2.0.0
+  contact:
+    name: Saras Studio
+
+servers:
+  - url: http://localhost:8090
+    description: Studio API
+
+tags:
+  - name: Studio
+    description: Studio endpoints
+
+# ─────────────────────────────────────────────────────────────────────────────
+# PATHS
+# ─────────────────────────────────────────────────────────────────────────────
+paths:
+
+  /health:
+    get:
+      tags: [Studio]
+      summary: Health check
+      operationId: healthCheck
+      responses:
+        "200":
+          description: Service is healthy
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status:
+                    type: string
+                    example: ok
+
+  /api/models:
+    get:
+      tags: [Studio]
+      summary: List available NIM models (OCR & Solver)
+      description: |
+        Returns models in two user-facing categories:
+        - **OCR** — Vision models for text extraction from images
+        - **Solver** — All solver tiers, hint generator, and router models
+
+        Models are grouped by provider (Meta, Google, NVIDIA, etc.) within each category.
+      operationId: listModels
+      responses:
+        "200":
+          description: Model categories
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  categories:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/StudioCategoryListing"
+
+  /api/extract:
+    post:
+      tags: [Studio]
+      summary: Extract text from an image using an OCR model
+      description: |
+        Uploads an image, optionally resizes it (max 1568px), stores it in R2
+        (or as a data URI fallback), runs OCR extraction with the chosen vision
+        model, persists the result, and returns the extraction.
+      operationId: extract
+      requestBody:
+        required: true
+        content:
+          multipart/form-data:
+            schema:
+              type: object
+              required: [session_id, user_id, image]
+              properties:
+                session_id:
+                  type: string
+                  description: Client-generated session UUID
+                user_id:
+                  type: string
+                  description: User identifier
+                model:
+                  type: string
+                  description: NIM model ID for OCR. Defaults to the default vision model if omitted.
+                  example: meta/llama-3.2-90b-vision-instruct
+                image:
+                  type: string
+                  format: binary
+                  description: Image file (JPG, PNG). Will be resized to max 1568px.
+      responses:
+        "200":
+          description: Extraction result
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Extraction"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  /api/extractions:
+    get:
+      tags: [Studio]
+      summary: List extractions for a session
+      description: Returns all persisted extractions for the given session and user, newest first.
+      operationId: listExtractions
+      parameters:
+        - name: session_id
+          in: query
+          required: true
+          schema:
+            type: string
+          description: The session UUID to filter by
+        - name: user_id
+          in: query
+          required: true
+          schema:
+            type: string
+          description: User identifier
+      responses:
+        "200":
+          description: List of extractions
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  extractions:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/Extraction"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  /api/chat:
+    post:
+      tags: [Studio]
+      summary: Workspace chat (SSE stream)
+      description: |
+        Intent-based chat endpoint. Users drop extraction cards into the workspace,
+        label them as **Question** or **Attempt**, optionally type additional context
+        (e.g. diagram details the OCR missed), then choose an intent:
+
+        | Intent     | Description                                          | Required slots        |
+        |------------|------------------------------------------------------|-----------------------|
+        | `solve`    | Full step-by-step solution                           | ≥1 Question           |
+        | `hint`     | Pedagogical hint without revealing the answer         | ≥1 Question           |
+        | `evaluate` | Score student attempt against the question (0–1)     | 1 Question + 1 Attempt|
+        | `followup` | Continue the conversation with free-text              | Any (uses history)    |
+
+        For `solve`, `hint`, and `evaluate` intents the `message` field carries
+        optional additional context (e.g. "angle ABC = 60°, mass m = 2 kg") that
+        is appended to the prompt. For `followup` it is the user's free-text message.
+
+        The response is streamed as SSE with `data: {"type":"token","text":"..."}` frames,
+        terminated by `data: [DONE]`.
+      operationId: chat
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ChatRequest"
+      responses:
+        "200":
+          description: SSE token stream
+          content:
+            text/event-stream:
+              schema:
+                $ref: "#/components/schemas/SSETokenStream"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "404":
+          description: Extraction not found
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+# ─────────────────────────────────────────────────────────────────────────────
+# COMPONENTS
+# ─────────────────────────────────────────────────────────────────────────────
+components:
+
+  responses:
+    BadRequest:
+      description: Invalid request parameters
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ErrorResponse"
+    InternalError:
+      description: Internal server error
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ErrorResponse"
+
+  schemas:
+
+    ErrorResponse:
+      type: object
+      properties:
+        error:
+          type: string
+          example: session_id required
+
+    ModelExpert:
+      type: object
+      properties:
+        id:
+          type: string
+          example: meta/llama-3.2-90b-vision-instruct
+        display_name:
+          type: string
+          example: Llama 3.2 90B Vision
+        priority:
+          type: integer
+          description: Lower = preferred. 1 = default for the category.
+          example: 1
+        notes:
+          type: string
+          example: Best for handwritten text
+
+    StudioCategoryListing:
+      type: object
+      properties:
+        category:
+          type: string
+          enum: [OCR, Solver]
+        description:
+          type: string
+        default:
+          type: string
+          description: Default model ID for this category
+        providers:
+          type: array
+          items:
+            $ref: "#/components/schemas/ProviderGroup"
+        total_models:
+          type: integer
+
+    ProviderGroup:
+      type: object
+      properties:
+        provider:
+          type: string
+          example: Meta
+        models:
+          type: array
+          items:
+            $ref: "#/components/schemas/ModelExpert"
+
+    Extraction:
+      type: object
+      properties:
+        id:
+          type: string
+          format: uuid
+        session_id:
+          type: string
+          format: uuid
+        user_id:
+          type: string
+          description: User identifier
+        image_url:
+          type: string
+          description: R2 public URL or data URI of the uploaded image
+        extracted_text:
+          type: string
+          description: OCR-extracted text content
+        model_id:
+          type: string
+          description: NIM model used for extraction
+        created_at:
+          type: string
+          format: date-time
+
+    ChatRequest:
+      type: object
+      required: [session_id, user_id]
+      properties:
+        session_id:
+          type: string
+          description: Client-generated session UUID
+        user_id:
+          type: string
+          description: User identifier
+        model:
+          type: string
+          description: Solver model ID. Defaults to the default solver model.
+        intent:
+          type: string
+          enum: [solve, hint, evaluate, followup]
+          default: solve
+          description: The action intent for this chat turn
+        slots:
+          type: array
+          description: Extraction cards dropped into the workspace with role labels
+          items:
+            $ref: "#/components/schemas/ChatSlot"
+        message:
+          type: string
+          description: |
+            For `solve`, `hint`, `evaluate`: optional additional context the user
+            provides to supplement the extracted text (e.g. diagram details, angles,
+            values the OCR may have missed).
+            For `followup`: the user's free-text follow-up message.
+        history:
+          type: array
+          description: Prior conversation turns (sent by frontend for multi-turn context)
+          items:
+            $ref: "#/components/schemas/ChatTurn"
+
+    ChatSlot:
+      type: object
+      properties:
+        extraction_id:
+          type: string
+          format: uuid
+          description: ID of the extraction to include
+        role:
+          type: string
+          enum: [question, attempt]
+          description: Role label assigned by the user
+
+    ChatTurn:
+      type: object
+      properties:
+        role:
+          type: string
+          enum: [user, assistant]
+        content:
+          type: string
+
+    SSETokenStream:
+      type: string
+      description: |
+        Server-Sent Events stream of tokens.
+
+        Each frame: `data: {"type":"token","text":"<chunk>"}\n\n`
+
+        Terminal frame: `data: [DONE]\n\n`

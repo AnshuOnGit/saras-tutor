@@ -1,5 +1,27 @@
+# Environment
 .env
+.env.local
+.env.*.local
+
+# Go
 *.exe
 *.test
 vendor/
 tmp/
+saras-tutor
+
+# Node / Frontend
+node_modules/
+dist/
+.vite/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
