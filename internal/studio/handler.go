@@ -17,9 +17,9 @@ import (
 	"strings"
 	"time"
 
-	"saras-tutor/config"
-	"saras-tutor/llm"
-	"saras-tutor/storage"
+	"saras-tutor/internal/config"
+	"saras-tutor/internal/llm"
+	"saras-tutor/internal/storage"
 
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"

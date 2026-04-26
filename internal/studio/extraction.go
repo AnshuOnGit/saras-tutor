@@ -16,7 +16,7 @@ import (
 	"strings"
 	"time"
 
-	"saras-tutor/llm"
+	"saras-tutor/internal/llm"
 
 	"golang.org/x/image/draw"
 )

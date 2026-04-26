@@ -16,7 +16,7 @@ RUN GOTOOLCHAIN=auto go mod download
 COPY . .
 
 # Build the studio binary
-RUN GOTOOLCHAIN=auto CGO_ENABLED=0 GOOS=linux go build -o /studio cmd/studio/main.go
+RUN GOTOOLCHAIN=auto CGO_ENABLED=0 GOOS=linux go build -o /studio cmd/server/main.go
 
 # Runtime stage
 FROM alpine:3.20

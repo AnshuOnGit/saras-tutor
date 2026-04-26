@@ -8,7 +8,7 @@ import (
 	"strings"
 	"time"
 
-	"saras-tutor/llm"
+	"saras-tutor/internal/llm"
 )
 
 // SafetyResult represents the gatekeeper verdict.
@@ -19,6 +19,9 @@ type SafetyResult struct {
 
 // GatekeeperModel is the fast 8B model used for intent classification.
 const GatekeeperModel = "meta/llama-3.1-8b-instruct"
+
+// GatekeeperFallbackModel is tried if the primary model times out.
+const GatekeeperFallbackModel = "google/gemma-3-4b-it"
 
 // ─── Layer 1: Regex Pre-Filter ────────────────────────────────────────
 
@@ -56,7 +59,70 @@ func QuickReject(text string) (bool, string) {
 			return true, bp.Reason
 		}
 	}
+	// Heuristic: if the text is long enough (>80 chars) but contains
+	// zero PCMB signals, it's almost certainly not a science question.
+	if len(strings.TrimSpace(text)) > 80 && !hasPCMBSignals(text) {
+		return true, "No physics, chemistry, math, or biology content detected"
+	}
 	return false, ""
+}
+
+// pcmbKeywords are terms that indicate PCMB content.
+var pcmbKeywords = regexp.MustCompile(`(?i)\b(` +
+	// Math
+	`equation|formula|derivative|integral|differentiat|calculus|` +
+	`trigonometr|logarithm|matrix|determinant|vector|polynomial|` +
+	`quadratic|linear|algebra|geometry|coordinate|probability|` +
+	`permutation|combination|function|graph|limit|continuity|` +
+	`convergent|divergent|series|sequence|arithmetic|geometric|` +
+	`binomial|factorial|prime\s+number|modular|congruence|` +
+	`sin\b|cos\b|tan\b|cot\b|sec\b|cosec\b|` +
+	`theorem|proof|axiom|lemma|corollary|` +
+	// Physics
+	`newton|force|velocity|acceleration|momentum|energy|kinetic|` +
+	`potential|gravity|gravitation|friction|torque|angular|` +
+	`oscillation|wave|frequency|wavelength|amplitude|` +
+	`electric|magnetic|circuit|resistance|capacitor|inductor|` +
+	`current|voltage|ohm|coulomb|gauss|faraday|` +
+	`thermodynamic|entropy|enthalpy|heat|temperature|pressure|` +
+	`optic|refraction|reflection|diffraction|interference|lens|mirror|` +
+	`quantum|photon|electron|proton|neutron|nucleus|` +
+	`relativity|mechanics|fluid|viscosity|buoyancy|` +
+	`projectile|incline|pulley|spring|pendulum|` +
+	// Chemistry
+	`atom|molecule|element|compound|reaction|reagent|` +
+	`oxidation|reduction|redox|acid|base|salt|pH|` +
+	`molar|molarity|molality|stoichiometry|` +
+	`organic|inorganic|hydrocarbon|alkane|alkene|alkyne|` +
+	`alcohol|aldehyde|ketone|carboxylic|ester|amine|amide|` +
+	`periodic\s+table|electron\s+configuration|orbital|` +
+	`bond|ionic|covalent|metallic|hydrogen\s+bond|` +
+	`equilibrium|catalyst|enzyme|rate\s+of\s+reaction|` +
+	`solution|solvent|solute|concentration|dilution|` +
+	`electrolysis|electrochemical|galvanic|` +
+	// Biology
+	`cell|mitosis|meiosis|chromosome|DNA|RNA|gene|` +
+	`protein|amino\s+acid|nucleotide|ribosome|` +
+	`photosynthesis|respiration|metabolism|ATP|` +
+	`evolution|natural\s+selection|mutation|adaptation|` +
+	`ecology|ecosystem|food\s+chain|biodiversity|` +
+	`anatomy|physiology|organ|tissue|blood|heart|lung|kidney|liver|` +
+	`neuron|synapse|hormone|endocrine|immune|antibody|antigen|` +
+	`plant|root|stem|leaf|flower|seed|pollination|` +
+	`taxonomy|species|genus|phylum|kingdom` +
+	`)\b`)
+
+// pcmbSymbols detects math notation and scientific symbols.
+var pcmbSymbols = regexp.MustCompile(
+	`[\$\\]|` + // dollar signs or backslashes (LaTeX)
+		`[=<>≥≤±∓×÷≈≡∂∇∫∑∏√∞]|` + // math operators
+		`\b\d+\s*(m/s|km/h|kg|mol|atm|Pa|Hz|eV|J|W|N|C|V|Ω|A|K|°C|cm|mm|nm|μm)\b|` + // units
+		`\b[A-Z][a-z]?\d*[+-]?\b.*\b(ion|oxide|chloride|sulfate|nitrate)\b|` + // chemical compounds
+		`\^[{0-9]|_[{0-9]|` + // superscripts/subscripts
+		`\b\d+\s*[+\-*/^]\s*\d+`) // arithmetic expressions
+
+func hasPCMBSignals(text string) bool {
+	return pcmbKeywords.MatchString(text) || pcmbSymbols.MatchString(text)
 }
 
 // ─── Layer 2: LLM Gate ────────────────────────────────────────────────
@@ -108,39 +174,48 @@ Input: ""
 Output: {"safe": false, "reason": "Empty input"}`
 
 // CheckIntentPurity calls the LLM gate for nuanced classification.
-// Fails open: if the LLM call fails, returns Safe=true to avoid blocking students.
+// Tries the primary model first, then a fallback. Only fails open if both fail.
 func CheckIntentPurity(ctx context.Context, cfg gatekeeperConfig, text string) SafetyResult {
-	client := llm.NewClient(cfg.apiKey, GatekeeperModel, cfg.baseURL, cfg.userID)
-	client.MaxTokens = 80
+	models := []string{GatekeeperModel, GatekeeperFallbackModel}
+	for _, modelID := range models {
+		client := llm.NewClient(cfg.apiKey, modelID, cfg.baseURL, cfg.userID)
+		client.MaxTokens = 80
 
-	// 5-second timeout so the student isn't waiting long.
-	gateCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
-	defer cancel()
+		// 15-second timeout per attempt (NIM cold starts can be slow).
+		gateCtx, cancel := context.WithTimeout(ctx, 15*time.Second)
 
-	messages := []llm.ChatMessage{
-		{Role: "system", Content: gatekeeperPrompt},
-		{Role: "user", Content: text},
+		messages := []llm.ChatMessage{
+			{Role: "system", Content: gatekeeperPrompt},
+			{Role: "user", Content: text},
+		}
+
+		resp, err := client.Complete(gateCtx, messages)
+		cancel()
+		if err != nil {
+			slog.Warn("[GATEKEEPER] LLM call failed, trying next model",
+				"model", modelID, "error", err)
+			continue
+		}
+
+		content := strings.TrimSpace(resp.Content)
+		content = strings.TrimPrefix(content, "```json")
+		content = strings.TrimPrefix(content, "```")
+		content = strings.TrimSuffix(content, "```")
+		content = strings.TrimSpace(content)
+
+		var result SafetyResult
+		if err := json.Unmarshal([]byte(content), &result); err != nil {
+			slog.Warn("[GATEKEEPER] JSON parse failed, trying next model",
+				"model", modelID, "error", err, "raw", content)
+			continue
+		}
+		slog.Info("[GATEKEEPER] LLM gate result",
+			"model", modelID, "safe", result.Safe, "reason", result.Reason)
+		return result
 	}
 
-	resp, err := client.Complete(gateCtx, messages)
-	if err != nil {
-		slog.Warn("[GATEKEEPER] LLM call failed, failing open", "error", err)
-		return SafetyResult{Safe: true}
-	}
-
-	content := strings.TrimSpace(resp.Content)
-	// Strip markdown code fences if present
-	content = strings.TrimPrefix(content, "```json")
-	content = strings.TrimPrefix(content, "```")
-	content = strings.TrimSuffix(content, "```")
-	content = strings.TrimSpace(content)
-
-	var result SafetyResult
-	if err := json.Unmarshal([]byte(content), &result); err != nil {
-		slog.Warn("[GATEKEEPER] JSON parse failed, failing open", "error", err, "raw", content)
-		return SafetyResult{Safe: true}
-	}
-	return result
+	slog.Warn("[GATEKEEPER] All models failed, failing open")
+	return SafetyResult{Safe: true}
 }
 
 // gatekeeperConfig holds LLM connection details for the gatekeeper.

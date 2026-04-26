@@ -5,11 +5,11 @@ import (
 	"log/slog"
 	"os"
 
-	"saras-tutor/config"
-	"saras-tutor/db"
-	"saras-tutor/middleware"
-	"saras-tutor/storage"
-	"saras-tutor/studio"
+	"saras-tutor/internal/config"
+	"saras-tutor/internal/db"
+	"saras-tutor/internal/middleware"
+	"saras-tutor/internal/storage"
+	"saras-tutor/internal/studio"
 
 	"github.com/gin-gonic/gin"
 	"github.com/joho/godotenv"
