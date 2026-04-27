@@ -49,13 +49,33 @@ func main() {
 	}
 
 	h := studio.NewHandler(cfg, pool, storageSvc)
+	hh := studio.NewHealthHandler(pool, "1.0.0")
 
-	r := gin.Default()
+	r := gin.New()
+	r.Use(middleware.Recovery())
+	r.Use(middleware.SanitizeHeaders())
+	r.Use(middleware.Security(middleware.SecurityConfig{Environment: cfg.Server.Environment}))
 	r.Use(middleware.CORS(cfg.CORS))
 	r.Use(middleware.RequestID())
 	r.Use(middleware.Logger())
 
-	r.GET("/health", func(c *gin.Context) { c.JSON(200, gin.H{"status": "ok"}) })
+	if cfg.RateLimit.Enabled {
+		rl := middleware.NewRateLimiter(middleware.RateLimitConfig{
+			RequestsPerSecond: cfg.RateLimit.RequestsPerSecond,
+			Burst:             cfg.RateLimit.Burst,
+			TTL:               cfg.RateLimit.TTL,
+			CleanupInterval:   cfg.RateLimit.CleanupInterval,
+		})
+		r.Use(rl.Middleware())
+		logger.Info().
+			Float64("rps", cfg.RateLimit.RequestsPerSecond).
+			Int("burst", cfg.RateLimit.Burst).
+			Msg("rate limiting enabled")
+	}
+
+	r.GET("/health", hh.Health)
+	r.GET("/liveness", hh.Liveness)
+	r.GET("/readiness", hh.Readiness)
 
 	api := r.Group("/api")
 	api.GET("/models", h.ListModels)
