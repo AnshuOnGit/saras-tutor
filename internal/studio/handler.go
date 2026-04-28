@@ -658,12 +658,16 @@ RULES:
 	flusher.Flush()
 
 	// ── Phase C: Post-stream — save assistant response ──
+	// Use a detached context so the save isn't canceled when the client disconnects.
+	saveCtx, saveCancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer saveCancel()
+
 	assistantIntent := req.Intent
 	if assistantIntent == "" {
 		assistantIntent = "solve"
 	}
 	meta := map[string]string{"model_id": modelID, "session_id": req.SessionID}
-	if err := h.saveMessage(ctx, req.ConversationID, req.UserID, "assistant", assistantIntent, fullResponse.String(), nil, nil, meta); err != nil {
+	if err := h.saveMessage(saveCtx, req.ConversationID, req.UserID, "assistant", assistantIntent, fullResponse.String(), nil, nil, meta); err != nil {
 		logger.Error().Err(err).Msg("save assistant message")
 	}
 }

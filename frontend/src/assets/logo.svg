@@ -1,0 +1,35 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 400 400" width="100%" height="100%">
+  <!-- Definitions for Gradients -->
+  <defs>
+    <linearGradient id="blueGradient" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#1E3A8A" /> <!-- Deep Blue -->
+      <stop offset="100%" stop-color="#3B82F6" /> <!-- Bright Blue -->
+    </linearGradient>
+    <linearGradient id="accentGradient" x1="0%" y1="100%" x2="100%" y2="0%">
+      <stop offset="0%" stop-color="#059669" /> <!-- Medical/NEET Green -->
+      <stop offset="100%" stop-color="#10B981" /> <!-- Bright Green -->
+    </linearGradient>
+  </defs>
+
+  <!-- Background (Optional, kept transparent for web use) -->
+  <rect width="400" height="400" fill="transparent"/>
+
+  <!-- JEE Orbit Element -->
+  <ellipse cx="200" cy="160" rx="80" ry="30" transform="rotate(35 200 160)" fill="none" stroke="url(#blueGradient)" stroke-width="8" stroke-linecap="round" opacity="0.8"/>
+  
+  <!-- NEET Orbit/Leaf Element -->
+  <ellipse cx="200" cy="160" rx="80" ry="30" transform="rotate(-35 200 160)" fill="none" stroke="url(#accentGradient)" stroke-width="8" stroke-linecap="round" opacity="0.8"/>
+
+  <!-- Center Stylized 'S' -->
+  <path d="M 225 125 
+           C 225 105, 175 105, 175 135 
+           C 175 165, 225 155, 225 185 
+           C 225 215, 175 215, 175 195" 
+        fill="none" stroke="#0F172A" stroke-width="16" stroke-linecap="round" stroke-linejoin="round"/>
+
+  <!-- Brand Name -->
+  <text x="200" y="280" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif" font-size="56" font-weight="800" fill="#0F172A" text-anchor="middle" letter-spacing="4">SARAS</text>
+  
+  <!-- Subtitle -->
+  <text x="200" y="315" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif" font-size="18" font-weight="600" fill="#64748B" text-anchor="middle" letter-spacing="8">STUDIO</text>
+</svg>

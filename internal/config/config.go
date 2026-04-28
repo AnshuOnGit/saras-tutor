@@ -17,6 +17,8 @@ type Config struct {
 	RateLimit RateLimitConfig
 	Security  SecurityConfig
 	Logging   LoggingConfig
+	Auth      AuthConfig
+	JWT       JWTConfig
 }
 
 // ServerConfig holds HTTP server settings.
@@ -73,6 +75,23 @@ type LoggingConfig struct {
 	Format string // json, text
 }
 
+// AuthConfig holds Google OAuth 2.0 settings.
+type AuthConfig struct {
+	GoogleClientID     string
+	GoogleClientSecret string
+	GoogleRedirectURL  string
+	FrontendURL        string
+	StateExpiry        time.Duration
+}
+
+// JWTConfig holds JWT token settings.
+type JWTConfig struct {
+	SecretKey          string
+	AccessTokenExpiry  time.Duration
+	RefreshTokenExpiry time.Duration
+	Issuer             string
+}
+
 // Load reads configuration from environment variables with sensible defaults.
 func Load() *Config {
 	return &Config{
@@ -115,6 +134,19 @@ func Load() *Config {
 		Logging: LoggingConfig{
 			Level:  getEnv("LOG_LEVEL", "info"),
 			Format: getEnv("LOG_FORMAT", "json"),
+		},
+		Auth: AuthConfig{
+			GoogleClientID:     getEnv("GOOGLE_CLIENT_ID", ""),
+			GoogleClientSecret: getEnv("GOOGLE_CLIENT_SECRET", ""),
+			GoogleRedirectURL:  getEnv("GOOGLE_REDIRECT_URL", "http://localhost:8090/api/v1/auth/google/callback"),
+			FrontendURL:        getEnv("FRONTEND_URL", "http://localhost:5173"),
+			StateExpiry:        getDurationEnv("OAUTH_STATE_EXPIRY", 10*time.Minute),
+		},
+		JWT: JWTConfig{
+			SecretKey:          getEnv("JWT_SECRET_KEY", "change-this-in-production-use-32-chars"),
+			AccessTokenExpiry:  getDurationEnv("JWT_ACCESS_EXPIRY", 15*time.Minute),
+			RefreshTokenExpiry: getDurationEnv("JWT_REFRESH_EXPIRY", 7*24*time.Hour),
+			Issuer:             getEnv("JWT_ISSUER", "saras-studio"),
 		},
 	}
 }

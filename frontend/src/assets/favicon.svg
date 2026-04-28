@@ -1,0 +1,34 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 200 200" width="200" height="200">
+  <defs>
+    <linearGradient id="bg" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#1E3A8A"/>
+      <stop offset="100%" stop-color="#10B981"/>
+    </linearGradient>
+  </defs>
+
+  <!-- Rounded square background -->
+  <rect x="10" y="10" width="180" height="180" rx="40" fill="url(#bg)"/>
+
+  <!-- Orbit 1 -->
+  <ellipse cx="100" cy="100" rx="55" ry="18" 
+           transform="rotate(45 100 100)" 
+           fill="none" stroke="rgba(255,255,255,0.3)" stroke-width="4"/>
+
+  <!-- Orbit 2 -->
+  <ellipse cx="100" cy="100" rx="55" ry="18" 
+           transform="rotate(-45 100 100)" 
+           fill="none" stroke="rgba(255,255,255,0.3)" stroke-width="4"/>
+
+  <!-- Bold S -->
+  <path d="M 118 68 
+           C 118 48, 82 48, 82 75 
+           C 82 102, 118 92, 118 119 
+           C 118 146, 82 146, 82 126" 
+        fill="none" stroke="white" stroke-width="14" 
+        stroke-linecap="round" stroke-linejoin="round"/>
+
+  <!-- Dots -->
+  <circle cx="100" cy="38" r="6" fill="white" opacity="0.9"/>
+  <circle cx="140" cy="135" r="6" fill="white" opacity="0.9"/>
+  <circle cx="60" cy="65" r="6" fill="white" opacity="0.9"/>
+</svg>

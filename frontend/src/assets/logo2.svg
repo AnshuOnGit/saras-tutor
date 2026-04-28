@@ -1,0 +1,17 @@
+const Logo = ({ size = 'md', variant = 'full' }) => {
+  const sizes = {
+    sm: { width: 120, height: 40 },
+    md: { width: 200, height: 67 },
+    lg: { width: 300, height: 100 },
+  };
+
+  const { width, height } = sizes[size];
+
+  if (variant === 'icon') {
+    return <img src="favicon.svg" alt="Saras" width={height} height={height} />;
+  }
+
+  return <img src="logo.svg" alt="Saras Studio" width={width} height={height} />;
+};
+
+export default Logo;

@@ -1,11 +1,32 @@
 import { useState, useEffect, useRef, useCallback } from "react";
 import Markdown from "./components/Markdown";
+import LandingPage from "./components/LandingPage";
+import { useAuth } from "./context/AuthContext";
+import logoSvg from "./assets/logo.svg";
 
 const SESSION_ID = crypto.randomUUID();
-// TODO: replace with real OAuth user ID from Google sign-in
-const USER_ID = "anonymous";
 
 export default function App() {
+  const { user, loading, logout } = useAuth();
+
+  if (loading) {
+    return (
+      <div className="loading-screen">
+        <img src={logoSvg} alt="Saras" className="loading-logo" />
+        <div className="spinner" />
+      </div>
+    );
+  }
+
+  if (!user) {
+    return <LandingPage />;
+  }
+
+  return <Studio user={user} logout={logout} />;
+}
+
+function Studio({ user, logout }) {
+  const USER_ID = user.id;
   // ── Models ─────────────────────────────────────────────────────
   const [categories, setCategories] = useState([]);
   const [activeTab, setActiveTab] = useState("OCR");
@@ -38,6 +59,9 @@ export default function App() {
   const [followUp, setFollowUp] = useState("");
   const chatEndRef = useRef(null);
   const solverBodyRef = useRef(null);
+
+  // ── Mobile panel toggle ────────────────────────────────────────
+  const [mobilePanel, setMobilePanel] = useState("extract"); // "extract" | "workspace"
 
   // ── Load models ────────────────────────────────────────────────
   useEffect(() => {
@@ -165,9 +189,11 @@ export default function App() {
   };
 
   // ── Stream SSE ────────────────────────────────────────────────
+  const streamingRef = useRef(false);
   const streamChat = useCallback(
     async (intent, extraMessage) => {
-      if (streaming) return;
+      if (streamingRef.current) return;
+      streamingRef.current = true;
       setStreaming(true);
 
       const intentLabels = {
@@ -265,10 +291,11 @@ export default function App() {
           )
         );
       } finally {
+        streamingRef.current = false;
         setStreaming(false);
       }
     },
-    [selectedSolver, streaming, workspace, messages, conversationId]
+    [selectedSolver, workspace, messages, conversationId]
   );
 
   const handleFollowUp = (e) => {
@@ -302,11 +329,29 @@ export default function App() {
   // ─────────────────────────────────────────────────────────────
   return (
     <div className="studio-layout">
+      {/* ─── MOBILE NAV ─────────────────────────────────────────── */}
+      <div className="mobile-panel-nav">
+        <button className={`mobile-panel-btn ${mobilePanel === "extract" ? "active" : ""}`} onClick={() => setMobilePanel("extract")}>
+          📷 Extract
+        </button>
+        <button className={`mobile-panel-btn ${mobilePanel === "workspace" ? "active" : ""}`} onClick={() => setMobilePanel("workspace")}>
+          🧠 Workspace {workspace.length > 0 && <span className="mobile-badge">{workspace.length}</span>}
+        </button>
+      </div>
+
       {/* ─── LEFT PANEL ─────────────────────────────────────────── */}
-      <div className="left-panel">
+      <div className={`left-panel ${mobilePanel === "extract" ? "mobile-visible" : "mobile-hidden"}`}>
         <div className="panel-header">
-          <span style={{ fontSize: 20 }}>🧪</span>
+          <img src={logoSvg} alt="Saras" style={{ width: 24, height: 24 }} />
           <h2>Saras Studio</h2>
+          <div className="user-menu">
+            {user.picture ? (
+              <img src={user.picture} alt={user.name} className="user-avatar" />
+            ) : (
+              <span className="user-avatar-placeholder">{user.name?.[0] || "?"}</span>
+            )}
+            <button className="btn-sm btn-logout" onClick={logout} title="Sign out">↪ Sign out</button>
+          </div>
         </div>
 
         {/* Model selector */}
@@ -412,7 +457,7 @@ export default function App() {
       </div>
 
       {/* ─── RIGHT PANEL ────────────────────────────────────────── */}
-      <div className="right-panel">
+      <div className={`right-panel ${mobilePanel === "workspace" ? "mobile-visible" : "mobile-hidden"}`}>
         <div className="solver-header">
           <span style={{ fontSize: 20 }}>🧠</span>
           <h2>Workspace</h2>

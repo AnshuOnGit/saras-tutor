@@ -1,0 +1,68 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 600 200" width="600" height="200">
+  <defs>
+    <!-- Blue gradient for JEE/Engineering -->
+    <linearGradient id="g1" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#1E3A8A"/>
+      <stop offset="100%" stop-color="#3B82F6"/>
+    </linearGradient>
+    <!-- Green gradient for NEET/Medical -->
+    <linearGradient id="g2" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#059669"/>
+      <stop offset="100%" stop-color="#10B981"/>
+    </linearGradient>
+    <!-- Combined gradient for the S -->
+    <linearGradient id="g3" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#1E3A8A"/>
+      <stop offset="50%" stop-color="#3B82F6"/>
+      <stop offset="100%" stop-color="#10B981"/>
+    </linearGradient>
+  </defs>
+
+  <!-- === ICON SECTION (Left Side) === -->
+  
+  <!-- Outer Circle -->
+  <circle cx="80" cy="100" r="70" fill="none" stroke="#E2E8F0" stroke-width="2"/>
+
+  <!-- Orbit 1 - Engineering (Blue) -->
+  <ellipse cx="80" cy="100" rx="55" ry="20" 
+           transform="rotate(45 80 100)" 
+           fill="none" stroke="url(#g1)" stroke-width="3.5" 
+           stroke-linecap="round" opacity="0.9"/>
+
+  <!-- Orbit 2 - Medical (Green) -->
+  <ellipse cx="80" cy="100" rx="55" ry="20" 
+           transform="rotate(-45 80 100)" 
+           fill="none" stroke="url(#g2)" stroke-width="3.5" 
+           stroke-linecap="round" opacity="0.9"/>
+
+  <!-- Stylized S in the center -->
+  <path d="M 98 68 
+           C 98 52, 62 52, 62 75 
+           C 62 98, 98 88, 98 111 
+           C 98 134, 62 134, 62 118" 
+        fill="none" stroke="url(#g3)" stroke-width="10" 
+        stroke-linecap="round" stroke-linejoin="round"/>
+
+  <!-- Electron dots -->
+  <circle cx="80" cy="42" r="5" fill="#3B82F6"/>
+  <circle cx="118" cy="130" r="5" fill="#10B981"/>
+  <circle cx="42" cy="70" r="5" fill="#1E3A8A"/>
+
+  <!-- === TEXT SECTION (Right Side) === -->
+
+  <!-- SARAS -->
+  <text x="175" y="108" 
+        font-family="'Inter', 'Segoe UI', system-ui, -apple-system, sans-serif" 
+        font-size="64" font-weight="800" fill="#0F172A" 
+        letter-spacing="6">SARAS</text>
+
+  <!-- Decorative line -->
+  <line x1="175" y1="120" x2="460" y2="120" 
+        stroke="url(#g3)" stroke-width="2.5" stroke-linecap="round"/>
+
+  <!-- Tagline -->
+  <text x="175" y="145" 
+        font-family="'Inter', 'Segoe UI', system-ui, -apple-system, sans-serif" 
+        font-size="16" font-weight="500" fill="#64748B" 
+        letter-spacing="10">JEE &amp; NEET PREP</text>
+</svg>

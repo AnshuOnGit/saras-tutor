@@ -95,10 +95,18 @@ TRANSCRIPTION RULES:
    - Balance ALL braces {} and parentheses ().
    - Prefer ASCII operators (- not Unicode −, >= not ≥) unless inside $ delimiters.
    - For piecewise expressions, use separate $$ per branch in a bullet list.
+   - EVERY mathematical expression MUST be fully enclosed in a SINGLE $ or $$ pair. NEVER split one expression across multiple $ pairs or leave partial math outside delimiters.
+   - WRONG: f(x) = 7 tan⁸x + 7 tan⁶x    (Unicode superscripts, no LaTeX)
+   - WRONG: f(x)=7tan 8 x+7tan 6 x         (exponents rendered as separate text)
+   - WRONG: $f(x) = 7\tan^8 x$ + $7\tan^6 x$  (one expression split across multiple $ pairs)
+   - CORRECT: $f(x) = 7\tan^8 x + 7\tan^6 x - 3\tan^4 x - 3\tan^2 x$
+   - WRONG: $\mathrm{I}_1 = \int_0^{\pi/4} f(x) \mathrm{d} x$ and $\mathrm{I}_2 = \int_0^{\pi/4} x f(x) $\mathrm{d} x   (unbalanced $, \mathrm outside delimiters)
+   - CORRECT: $I_1 = \int_0^{\pi/4} f(x)\,dx$ and $I_2 = \int_0^{\pi/4} x\,f(x)\,dx$
 4. NEVER nest dollar signs, place math inside backtick code blocks, or use \tag/\label/\newcommand.
-5. For diagrams/figures: describe under "## Diagram" with all labels, vertices, segments, angles, and measurements visible.
-6. For tables: use Markdown tables.
-7. Keep output concise — no preamble like "The problem statement is" or "The extracted content is".
+5. NEVER leave Unicode math symbols (⁰¹²³⁴⁵⁶⁷⁸⁹, ∫, ∑, √, etc.) outside $ delimiters — convert them to LaTeX.
+6. For diagrams/figures: describe under "## Diagram" with all labels, vertices, segments, angles, and measurements visible.
+7. For tables: use Markdown tables.
+8. Keep output concise — no preamble like "The problem statement is" or "The extracted content is".
 
 ABSOLUTE PROHIBITIONS — violating ANY of these makes your output INVALID:
 ❌ NEVER write steps, solutions, derivations, or working.
@@ -255,6 +263,7 @@ type extractConfig struct {
 // fixLaTeXInMarkdown repairs LaTeX commands whose leading backslash was
 // converted to a control character by json.Unmarshal.
 func fixLaTeXInMarkdown(s string) string {
+	// Phase 1: fix common escape sequence issues
 	var b strings.Builder
 	b.Grow(len(s))
 	runes := []rune(s)
@@ -273,7 +282,99 @@ func fixLaTeXInMarkdown(s string) string {
 			b.WriteRune(ch)
 		}
 	}
+	s = b.String()
+
+	// Phase 2: replace Unicode superscript/subscript digits outside $ delimiters
+	s = fixUnicodeMathOutsideDollars(s)
+
+	// Phase 3: balance unmatched dollar signs
+	s = balanceDollarSigns(s)
+
+	return s
+}
+
+// unicodeSuperscripts maps Unicode superscript chars to their LaTeX equivalent.
+var unicodeSuperscripts = map[rune]string{
+	'⁰': "^{0}", '¹': "^{1}", '²': "^{2}", '³': "^{3}", '⁴': "^{4}",
+	'⁵': "^{5}", '⁶': "^{6}", '⁷': "^{7}", '⁸': "^{8}", '⁹': "^{9}",
+	'⁺': "^{+}", '⁻': "^{-}", '⁼': "^{=}", 'ⁿ': "^{n}", 'ⁱ': "^{i}",
+}
+
+var unicodeSubscripts = map[rune]string{
+	'₀': "_{0}", '₁': "_{1}", '₂': "_{2}", '₃': "_{3}", '₄': "_{4}",
+	'₅': "_{5}", '₆': "_{6}", '₇': "_{7}", '₈': "_{8}", '₉': "_{9}",
+	'₊': "_{+}", '₋': "_{-}", '₌': "_{=}", 'ₙ': "_{n}", 'ₓ': "_{x}",
+}
+
+var unicodeMathSymbols = map[rune]string{
+	'∫': "\\int ", '∑': "\\sum ", '∏': "\\prod ", '√': "\\sqrt ",
+	'∞': "\\infty ", '≤': "\\leq ", '≥': "\\geq ", '≠': "\\neq ",
+	'±': "\\pm ", '∓': "\\mp ", '×': "\\times ", '÷': "\\div ",
+	'→': "\\to ", '←': "\\leftarrow ", '↔': "\\leftrightarrow ",
+	'α': "\\alpha ", 'β': "\\beta ", 'γ': "\\gamma ", 'δ': "\\delta ",
+	'θ': "\\theta ", 'λ': "\\lambda ", 'μ': "\\mu ", 'π': "\\pi ",
+	'σ': "\\sigma ", 'φ': "\\phi ", 'ω': "\\omega ", 'ε': "\\epsilon ",
+	'Δ': "\\Delta ", 'Σ': "\\Sigma ", 'Π': "\\Pi ", 'Ω': "\\Omega ",
+	'−': "-",
+}
+
+// fixUnicodeMathOutsideDollars replaces Unicode math characters that appear
+// outside of $ delimiters with their LaTeX equivalents wrapped in $.
+func fixUnicodeMathOutsideDollars(s string) string {
+	var b strings.Builder
+	b.Grow(len(s) + 128)
+	inDollar := false
+	runes := []rune(s)
+	for i := 0; i < len(runes); i++ {
+		ch := runes[i]
+
+		// Track $ state
+		if ch == '$' {
+			b.WriteRune(ch)
+			inDollar = !inDollar
+			// Handle $$
+			if i+1 < len(runes) && runes[i+1] == '$' {
+				b.WriteRune('$')
+				i++
+			}
+			continue
+		}
+
+		if inDollar {
+			b.WriteRune(ch)
+			continue
+		}
+
+		// Outside $ — replace Unicode math chars
+		if rep, ok := unicodeSuperscripts[ch]; ok {
+			b.WriteString(rep)
+		} else if rep, ok := unicodeSubscripts[ch]; ok {
+			b.WriteString(rep)
+		} else if rep, ok := unicodeMathSymbols[ch]; ok {
+			b.WriteString(rep)
+		} else {
+			b.WriteRune(ch)
+		}
+	}
 	return b.String()
+}
+
+// balanceDollarSigns ensures every $ has a closing pair on the same line.
+func balanceDollarSigns(s string) string {
+	lines := strings.Split(s, "\n")
+	for i, line := range lines {
+		count := 0
+		for _, ch := range line {
+			if ch == '$' {
+				count++
+			}
+		}
+		// Odd number of $ means one is unmatched — append a closing $
+		if count%2 != 0 {
+			lines[i] = line + "$"
+		}
+	}
+	return strings.Join(lines, "\n")
 }
 
 // extractJSONObject finds the first JSON object in raw text and sanitizes
