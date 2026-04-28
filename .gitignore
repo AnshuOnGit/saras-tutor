@@ -14,6 +14,7 @@ saras-tutor
 node_modules/
 dist/
 .vite/
+.wrangler
 
 # IDE
 .vscode/

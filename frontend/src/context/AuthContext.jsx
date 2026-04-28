@@ -43,25 +43,6 @@ export function AuthProvider({ children }) {
   }, []);
 
   useEffect(() => {
-    // Handle OAuth callback — the server redirects to /auth/callback#access_token=...
-    if (window.location.pathname === "/auth/callback") {
-      // Tokens are set as HttpOnly cookies by the server, so we just need to check auth
-      checkAuth();
-      // Clean the URL
-      window.history.replaceState({}, "", "/");
-      return;
-    }
-
-    // Handle auth errors
-    if (window.location.pathname === "/auth/error") {
-      const params = new URLSearchParams(window.location.search);
-      const error = params.get("message") || "Authentication failed";
-      console.error("Auth error:", error);
-      setLoading(false);
-      window.history.replaceState({}, "", "/");
-      return;
-    }
-
     checkAuth();
   }, [checkAuth]);
 
@@ -82,7 +63,7 @@ export function AuthProvider({ children }) {
   };
 
   return (
-    <AuthContext.Provider value={{ user, loading, login, logout }}>
+    <AuthContext.Provider value={{ user, loading, login, logout, checkAuth }}>
       {children}
     </AuthContext.Provider>
   );
