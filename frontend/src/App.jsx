@@ -2,6 +2,7 @@ import { useState, useEffect, useRef, useCallback } from "react";
 import Markdown from "./components/Markdown";
 import LandingPage from "./components/LandingPage";
 import { useAuth } from "./context/AuthContext";
+import API_BASE from "./api";
 import logoSvg from "./assets/logo.svg";
 
 const SESSION_ID = crypto.randomUUID();
@@ -65,7 +66,7 @@ function Studio({ user, logout }) {
 
   // ── Load models ────────────────────────────────────────────────
   useEffect(() => {
-    fetch("/api/models")
+    fetch(`${API_BASE}/api/models`)
       .then((r) => r.json())
       .then((data) => {
         setCategories(data.categories || []);
@@ -79,7 +80,7 @@ function Studio({ user, logout }) {
 
   // ── Load extractions ──────────────────────────────────────────
   useEffect(() => {
-    fetch(`/api/extractions?session_id=${SESSION_ID}&user_id=${USER_ID}`)
+    fetch(`${API_BASE}/api/extractions?session_id=${SESSION_ID}&user_id=${USER_ID}`)
       .then((r) => r.json())
       .then((data) => setExtractions(data.extractions || []))
       .catch(console.error);
@@ -112,7 +113,7 @@ function Studio({ user, logout }) {
       fd.append("user_id", USER_ID);
       fd.append("model", selectedOCR);
       fd.append("image", imageFile);
-      const res = await fetch("/api/extract", { method: "POST", body: fd });
+      const res = await fetch(`${API_BASE}/api/extract`, { method: "POST", body: fd });
       if (!res.ok) {
         const err = await res.json();
         alert("Extraction failed: " + (err.error || res.statusText));
@@ -240,7 +241,7 @@ function Studio({ user, logout }) {
       };
 
       try {
-        const res = await fetch("/api/chat", {
+        const res = await fetch(`${API_BASE}/api/chat`, {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify(body),

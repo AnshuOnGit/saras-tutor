@@ -1,4 +1,5 @@
 import { createContext, useContext, useState, useEffect, useCallback } from "react";
+import API_BASE from "../api";
 
 const AuthContext = createContext(null);
 
@@ -9,13 +10,13 @@ export function AuthProvider({ children }) {
   // Check auth status on mount and after callback
   const checkAuth = useCallback(async () => {
     try {
-      const res = await fetch("/api/v1/users/me", { credentials: "include" });
+      const res = await fetch(`${API_BASE}/api/v1/users/me`, { credentials: "include" });
       if (res.ok) {
         const data = await res.json();
         setUser(data.user);
       } else if (res.status === 401) {
         // Try refreshing the token
-        const refreshRes = await fetch("/api/v1/auth/refresh", {
+        const refreshRes = await fetch(`${API_BASE}/api/v1/auth/refresh`, {
           method: "POST",
           credentials: "include",
           headers: { "Content-Type": "application/json" },
@@ -23,7 +24,7 @@ export function AuthProvider({ children }) {
         });
         if (refreshRes.ok) {
           // Retry profile
-          const retryRes = await fetch("/api/v1/users/me", { credentials: "include" });
+          const retryRes = await fetch(`${API_BASE}/api/v1/users/me`, { credentials: "include" });
           if (retryRes.ok) {
             const data = await retryRes.json();
             setUser(data.user);
@@ -65,12 +66,12 @@ export function AuthProvider({ children }) {
   }, [checkAuth]);
 
   const login = () => {
-    window.location.href = "/api/v1/auth/google";
+    window.location.href = `${API_BASE}/api/v1/auth/google`;
   };
 
   const logout = async () => {
     try {
-      await fetch("/api/v1/auth/logout", {
+      await fetch(`${API_BASE}/api/v1/auth/logout`, {
         method: "POST",
         credentials: "include",
       });
