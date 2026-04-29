@@ -9,7 +9,7 @@
     "preview": "vite preview"
   },
   "dependencies": {
-    "cropperjs": "^2.1.1",
+    "cropperjs": "^1.6.2",
     "katex": "^0.16.40",
     "react": "^19.2.4",
     "react-cropper": "^2.3.3",
