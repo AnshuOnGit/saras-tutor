@@ -104,7 +104,10 @@ function Studio({ user, logout }) {
 
   useEffect(() => {
     if (!userScrolledUp.current) {
-      chatEndRef.current?.scrollIntoView({ behavior: "smooth" });
+      const el = solverBodyRef.current;
+      if (el) {
+        el.scrollTop = el.scrollHeight;
+      }
     }
   }, [messages]);
 
