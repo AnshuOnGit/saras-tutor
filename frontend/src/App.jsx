@@ -1,6 +1,7 @@
 import { useState, useEffect, useRef, useCallback } from "react";
 import Markdown from "./components/Markdown";
 import LandingPage from "./components/LandingPage";
+import ImageCropper from "./components/ImageCropper";
 import { useAuth } from "./context/AuthContext";
 import API_BASE from "./api";
 import logoSvg from "./assets/logo.svg";
@@ -107,16 +108,31 @@ function Studio({ user, logout }) {
     }
   }, [messages]);
 
+  // ── Cropper ────────────────────────────────────────────────────
+  const [cropperSrc, setCropperSrc] = useState(null);
+
   // ── Upload handlers ───────────────────────────────────────────
   const handleFile = (file) => {
     if (!file || !file.type.startsWith("image/")) return;
-    setImageFile(file);
-    setImagePreview(URL.createObjectURL(file));
+    // Show cropper first
+    setCropperSrc(URL.createObjectURL(file));
+    if (fileInputRef.current) fileInputRef.current.value = "";
+  };
+
+  const handleCropped = (croppedFile, previewUrl) => {
+    setImageFile(croppedFile);
+    setImagePreview(previewUrl);
+    setCropperSrc(null);
+  };
+
+  const cancelCrop = () => {
+    setCropperSrc(null);
   };
 
   const clearImage = () => {
     setImageFile(null);
     setImagePreview(null);
+    setCropperSrc(null);
     if (fileInputRef.current) fileInputRef.current.value = "";
   };
 
@@ -592,6 +608,15 @@ function Studio({ user, logout }) {
           )}
         </div>
       </div>
+
+      {/* ─── IMAGE CROPPER MODAL ────────────────────────────── */}
+      {cropperSrc && (
+        <ImageCropper
+          imageSrc={cropperSrc}
+          onCropped={handleCropped}
+          onCancel={cancelCrop}
+        />
+      )}
 
       {/* ─── EXPANDED EXTRACTION MODAL ──────────────────────────── */}
       {expandedExtraction && (

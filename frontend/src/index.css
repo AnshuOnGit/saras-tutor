@@ -1014,6 +1014,143 @@ body,
   font-weight: 500;
 }
 
+/* ── Image Cropper modal ──────────────────────────────────────────── */
+.cropper-modal-overlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.85);
+  backdrop-filter: blur(6px);
+  z-index: 1100;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 16px;
+}
+
+.cropper-modal {
+  background: var(--bg-panel);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  width: 90vw;
+  max-width: 700px;
+  max-height: 90vh;
+  display: flex;
+  flex-direction: column;
+  box-shadow: 0 16px 64px rgba(0, 0, 0, 0.6);
+  overflow: hidden;
+}
+
+.cropper-header {
+  padding: 16px 20px;
+  border-bottom: 1px solid var(--border);
+  flex-shrink: 0;
+}
+
+.cropper-header h3 {
+  font-size: 16px;
+  font-weight: 700;
+  color: var(--text-primary);
+  margin-bottom: 4px;
+}
+
+.cropper-header p {
+  font-size: 12px;
+  color: var(--text-muted);
+}
+
+.cropper-container {
+  flex: 1;
+  min-height: 300px;
+  max-height: 60vh;
+  overflow: hidden;
+  background: #000;
+}
+
+.cropper-actions {
+  display: flex;
+  gap: 10px;
+  padding: 14px 20px;
+  border-top: 1px solid var(--border);
+  justify-content: flex-end;
+  flex-shrink: 0;
+}
+
+.btn-cropper-cancel {
+  background: transparent;
+  color: var(--text-secondary);
+  border: 1px solid var(--border);
+  padding: 10px 20px;
+  border-radius: var(--radius-sm);
+  font-size: 13px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: var(--transition);
+}
+
+.btn-cropper-cancel:hover {
+  border-color: var(--accent-danger);
+  color: var(--accent-danger);
+}
+
+.btn-cropper-done {
+  background: var(--accent-ocr);
+  color: #0f1117;
+  border: none;
+  padding: 10px 24px;
+  border-radius: var(--radius-sm);
+  font-size: 13px;
+  font-weight: 700;
+  cursor: pointer;
+  transition: var(--transition);
+}
+
+.btn-cropper-done:hover {
+  filter: brightness(1.1);
+}
+
+/* Override cropperjs theme for dark mode */
+.cropper-modal {
+  background-color: rgba(0, 0, 0, 0.7) !important;
+}
+
+.cropper-view-box {
+  outline: 2px solid var(--accent-ocr) !important;
+  outline-color: rgba(0, 212, 170, 0.75) !important;
+}
+
+.cropper-point {
+  background-color: var(--accent-ocr) !important;
+}
+
+.cropper-line {
+  background-color: var(--accent-ocr) !important;
+}
+
+@media (max-width: 900px) {
+  .cropper-modal {
+    width: 100vw;
+    max-width: 100vw;
+    max-height: 100vh;
+    border-radius: 0;
+  }
+
+  .cropper-container {
+    min-height: 250px;
+    max-height: 55vh;
+  }
+
+  .cropper-actions {
+    flex-direction: row;
+  }
+
+  .btn-cropper-cancel,
+  .btn-cropper-done {
+    flex: 1;
+    text-align: center;
+    justify-content: center;
+  }
+}
+
 /* ── Expanded extraction modal ─────────────────────────────────── */
 .modal-overlay {
   position: fixed;
