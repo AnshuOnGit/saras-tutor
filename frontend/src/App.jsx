@@ -86,9 +86,25 @@ function Studio({ user, logout }) {
       .catch(console.error);
   }, []);
 
-  // ── Auto-scroll chat ──────────────────────────────────────────
+  // ── Auto-scroll chat (only if user is near the bottom) ─────
+  const userScrolledUp = useRef(false);
+
   useEffect(() => {
-    chatEndRef.current?.scrollIntoView({ behavior: "smooth" });
+    const el = solverBodyRef.current;
+    if (!el) return;
+    const handleScroll = () => {
+      const threshold = 150;
+      const atBottom = el.scrollHeight - el.scrollTop - el.clientHeight < threshold;
+      userScrolledUp.current = !atBottom;
+    };
+    el.addEventListener("scroll", handleScroll, { passive: true });
+    return () => el.removeEventListener("scroll", handleScroll);
+  }, []);
+
+  useEffect(() => {
+    if (!userScrolledUp.current) {
+      chatEndRef.current?.scrollIntoView({ behavior: "smooth" });
+    }
   }, [messages]);
 
   // ── Upload handlers ───────────────────────────────────────────
@@ -394,7 +410,7 @@ function Studio({ user, logout }) {
             <div className="label">Drop an image or click to upload</div>
             <div className="hint">Supports JPG, PNG — will be resized to max 1568px</div>
           </div>
-          <input ref={fileInputRef} type="file" accept="image/*" hidden onChange={(e) => handleFile(e.target.files[0])} />
+          <input ref={fileInputRef} type="file" accept="image/*" capture="environment" hidden onChange={(e) => handleFile(e.target.files[0])} />
 
           {imagePreview && (
             <div className="upload-preview">
