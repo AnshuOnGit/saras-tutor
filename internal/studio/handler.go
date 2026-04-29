@@ -299,7 +299,7 @@ func (h *Handler) ListExtractions(c *gin.Context) {
 	}
 	rows, err := h.pool.Query(c.Request.Context(),
 		`SELECT id, session_id, user_id, image_url, extracted_text, model_id, created_at
-		 FROM extractions WHERE session_id = $1 AND user_id = $2 ORDER BY created_at DESC`, sessionID, userID)
+		 FROM extractions WHERE user_id = $1 ORDER BY created_at DESC LIMIT 10`, userID)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "query failed"})
 		return
