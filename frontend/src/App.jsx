@@ -477,9 +477,9 @@ function Studio({ user, logout }) {
                   <div className="card-text"><Markdown>{ext.extracted_text}</Markdown></div>
                   <div className="card-actions">
                     {!inWs ? (
-                      <button className="btn-sm btn-add-workspace" onClick={() => addToWorkspace(ext)}>＋ Add to workspace</button>
+                      <button className="btn-sm btn-add-workspace" onClick={() => { addToWorkspace(ext); setMobilePanel("workspace"); }}>＋ Add to workspace</button>
                     ) : (
-                      <span className="btn-sm in-workspace-badge">✓ In workspace</span>
+                      <button className="btn-sm in-workspace-badge" onClick={() => setMobilePanel("workspace")}>✓ In workspace</button>
                     )}
                     <button className="btn-sm" title="Drag to workspace">⇥ Drag</button>
                   </div>
