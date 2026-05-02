@@ -505,7 +505,12 @@ v_B^2 = v_0^2 - 2gl = 3gl
 PASS/FAIL POLICY — the renderer will enforce these:
 ✗ REJECT: bare math without $ delimiters, unbalanced braces, \begin{align/equation/cases/array/matrix}, \( \), \[ \], nested $, math in code blocks, headings not on own line.
 ✗ DOWNGRADE TO PLAIN TEXT: any expression with unsupported commands (\tag, \label, \DeclareMathOperator, \newcommand).
-✓ ACCEPTED: single-line $ and $$ with balanced braces, standard KaTeX commands only, proper markdown structure.`
+✓ ACCEPTED: single-line $ and $$ with balanced braces, standard KaTeX commands only, proper markdown structure.
+
+CONTENT ACCURACY RULES:
+• NEVER use placeholder text like "image", "figure", "picture", or "diagram" as a variable subscript or symbol. If you cannot identify a symbol, use a reasonable variable name (e.g. $a$, $v_0$, $F_{\text{net}}$).
+• Read ALL subscripts, superscripts, and symbols carefully from the provided question text. If a subscript looks like a number or letter, use that exact character.
+• If truly ambiguous, state the ambiguity explicitly in words — do NOT silently substitute a placeholder.`
 
 	switch req.Intent {
 	case "hint":

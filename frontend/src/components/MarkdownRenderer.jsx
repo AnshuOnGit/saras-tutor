@@ -97,6 +97,30 @@ function convertUnicodeMath(text) {
     if (i % 2 === 1) continue; // inside math — skip
 
     let s = pieces[i];
+
+    // If this piece contains an unclosed $$ or $ at the end (streaming),
+    // split it: only convert the safe prefix, leave the trailing math-in-progress alone.
+    let trailingMath = '';
+    const lastDD = s.lastIndexOf('$$');
+    if (lastDD >= 0) {
+      // Check if this $$ is unclosed (no matching $$ after it)
+      const after = s.slice(lastDD + 2);
+      if (!after.includes('$$')) {
+        trailingMath = s.slice(lastDD);
+        s = s.slice(0, lastDD);
+      }
+    } else {
+      // Check for unclosed single $
+      const lastD = s.lastIndexOf('$');
+      if (lastD >= 0) {
+        const after = s.slice(lastD + 1);
+        if (!after.includes('$')) {
+          trailingMath = s.slice(lastD);
+          s = s.slice(0, lastD);
+        }
+      }
+    }
+
     // Superscripts
     s = s.replace(/([a-zA-Z0-9])([⁰¹²³⁴⁵⁶⁷⁸⁹⁺⁻⁼⁽⁾ⁿⁱ]+)/g, (_, base, sups) => {
       const map = {'⁰':'0','¹':'1','²':'2','³':'3','⁴':'4','⁵':'5','⁶':'6','⁷':'7','⁸':'8','⁹':'9','⁺':'+','⁻':'-','⁼':'=','⁽':'(','⁾':')','ⁿ':'n','ⁱ':'i'};
@@ -109,7 +133,7 @@ function convertUnicodeMath(text) {
       const converted = [...subs].map(c => map[c] || c).join('');
       return `$${base}_{${converted}}$`;
     });
-    // Common symbols
+    // Common symbols — only replace outside math context
     s = s.replace(/×/g, '$\\times$');
     s = s.replace(/÷/g, '$\\div$');
     s = s.replace(/±/g, '$\\pm$');
@@ -133,11 +157,11 @@ function convertUnicodeMath(text) {
     s = s.replace(/→/g, '$\\rightarrow$');
     s = s.replace(/←/g, '$\\leftarrow$');
     s = s.replace(/⇌/g, '$\\rightleftharpoons$');
-    // Merge adjacent $ blocks: $X$ $Y$ → $X Y$ (avoids ugly spacing)
-    s = s.replace(/\$\s*\$\$/g, ' ');  // $$$ collapse
-    s = s.replace(/\$\s+\$/g, ' ');    // $ $ collapse (within a merged pair)
+    // Merge adjacent $ blocks: $X$$Y$ → $X Y$ (avoids ugly spacing)
+    s = s.replace(/\$\s*\$\$/g, ' ');
+    s = s.replace(/\$\s+\$/g, ' ');
 
-    pieces[i] = s;
+    pieces[i] = s + trailingMath;
   }
   return pieces.join('');
 }
