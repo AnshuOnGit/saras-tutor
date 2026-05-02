@@ -108,6 +108,19 @@ TRANSCRIPTION RULES:
 7. For tables: use Markdown tables.
 8. Keep output concise — no preamble like "The problem statement is" or "The extracted content is".
 
+CRITICAL JSON ESCAPING RULE:
+Since your output is a JSON string, EVERY backslash in LaTeX MUST be double-escaped.
+- Write \\frac{1}{2}  NOT \frac{1}{2}
+- Write \\vec{F}       NOT \vec{F}
+- Write \\alpha         NOT \alpha
+- Write \\int           NOT \int
+- Write \\text{kg}      NOT \text{kg}
+- Write \\sqrt{x}       NOT \sqrt{x}
+- Write \\sin, \\cos, \\tan, \\log, \\ln, \\lim
+This is because \f, \b, \t, \n, \r are JSON control characters.
+If you write \frac, JSON will interpret \f as a form-feed character and destroy the expression.
+EVERY SINGLE BACKSLASH must be \\ in your JSON output.
+
 ABSOLUTE PROHIBITIONS — violating ANY of these makes your output INVALID:
 ❌ NEVER write steps, solutions, derivations, or working.
 ❌ NEVER write "Step 1", "Step 2", "Solution", "Answer", "Therefore", "We can see", "Let us", "To find", "We need to", "The final answer is".
@@ -231,15 +244,20 @@ func extractTextFromImage(ctx context.Context, cfg extractConfig, imageURL strin
 		}
 	}
 
-	// Sanitize and parse JSON
+	// Extract the JSON object
 	extracted = extractJSONObject(extracted)
+
+	// Pre-process to fix backslash escaping BEFORE json.Unmarshal
+	extracted = preProcessLLMJSON(extracted)
 
 	var resp extractionResponse
 	if err := json.Unmarshal([]byte(extracted), &resp); err != nil {
-		logger.Warn().Err(err).Msg("extraction: JSON parse failed, using raw text")
+		logger.Warn().Err(err).Str("raw", truncate(extracted, 200)).
+			Msg("extraction: JSON parse failed, using raw text")
 		return extracted, nil
 	}
 
+	// Post-process: fix any remaining Unicode math symbols
 	if resp.Content != "" {
 		resp.Content = fixLaTeXInMarkdown(resp.Content)
 	}
@@ -389,15 +407,18 @@ func extractJSONObject(raw string) string {
 	if start >= 0 && end > start {
 		raw = strings.TrimSpace(raw[start : end+1])
 	}
-	return sanitizeJSONString(raw)
+	return raw
 }
 
-func sanitizeJSONString(s string) string {
+// preProcessLLMJSON escapes ALL single backslashes inside JSON string
+// values that are not already valid JSON escape sequences.
+// This catches \frac, \vec, \alpha, etc. that the LLM forgot to double-escape.
+func preProcessLLMJSON(raw string) string {
 	var b strings.Builder
-	b.Grow(len(s) + 64)
+	b.Grow(len(raw) + 256)
 
 	inString := false
-	runes := []rune(s)
+	runes := []rune(raw)
 
 	for i := 0; i < len(runes); i++ {
 		ch := runes[i]
@@ -410,74 +431,94 @@ func sanitizeJSONString(s string) string {
 			continue
 		}
 
-		switch ch {
-		case '"':
+		// Inside a JSON string
+		if ch == '"' {
 			inString = false
 			b.WriteRune(ch)
-		case '\\':
+			continue
+		}
+
+		if ch == '\\' {
 			if i+1 >= len(runes) {
 				b.WriteString("\\\\")
 				continue
 			}
 			next := runes[i+1]
+
+			// Valid JSON escapes — pass through as-is
 			switch next {
 			case '"', '\\', '/':
 				b.WriteRune(ch)
 				b.WriteRune(next)
 				i++
-			case 'b', 'f', 'n', 'r', 't':
-				isLaTeX := false
-				if i+2 < len(runes) {
-					after := runes[i+2]
-					if after >= 'a' && after <= 'z' {
-						isLaTeX = true
-					}
-				}
-				if isLaTeX {
-					b.WriteString("\\\\")
-					b.WriteRune(next)
-					i++
-				} else {
+				continue
+			case 'u':
+				// Check for valid \uXXXX
+				if i+5 < len(runes) && isHex4(runes[i+2:i+6]) {
 					b.WriteRune(ch)
 					b.WriteRune(next)
 					i++
+					continue
 				}
-			case 'u':
-				if i+5 < len(runes) {
-					hex := string(runes[i+2 : i+6])
-					valid := true
-					for _, h := range hex {
-						if !((h >= '0' && h <= '9') || (h >= 'a' && h <= 'f') || (h >= 'A' && h <= 'F')) {
-							valid = false
-							break
-						}
-					}
-					if valid {
-						b.WriteRune(ch)
-						b.WriteRune(next)
-						i++
-						continue
-					}
-				}
-				b.WriteString("\\\\u")
-				i++
-			default:
+				// Not valid unicode escape — it's LaTeX (\underset etc.)
 				b.WriteString("\\\\")
 				b.WriteRune(next)
 				i++
+				continue
+			case 'n', 'r', 't', 'b', 'f':
+				// Could be JSON control char OR LaTeX (\not, \neq, \right, \tan, \beta, \frac)
+				// Heuristic: if followed by a lowercase letter, it's LaTeX
+				if i+2 < len(runes) && isLatinLower(runes[i+2]) {
+					b.WriteString("\\\\")
+					b.WriteRune(next)
+					i++
+					continue
+				}
+				// Otherwise treat as JSON control character
+				b.WriteRune(ch)
+				b.WriteRune(next)
+				i++
+				continue
+			default:
+				// Any other \X is NOT valid JSON — must be LaTeX
+				b.WriteString("\\\\")
+				b.WriteRune(next)
+				i++
+				continue
 			}
+		}
+
+		// Handle raw control characters that shouldn't be in JSON
+		switch ch {
 		case '\n':
 			b.WriteString("\\n")
 		case '\r':
 			b.WriteString("\\r")
 		case '\t':
 			b.WriteString("\\t")
+		case '\x08': // Already-decoded \b (backspace)
+			b.WriteString("\\\\b")
+		case '\x0c': // Already-decoded \f (form-feed)
+			b.WriteString("\\\\f")
 		default:
 			b.WriteRune(ch)
 		}
 	}
 
 	return b.String()
+}
+
+func isHex4(r []rune) bool {
+	for _, c := range r {
+		if !((c >= '0' && c <= '9') || (c >= 'a' && c <= 'f') || (c >= 'A' && c <= 'F')) {
+			return false
+		}
+	}
+	return true
+}
+
+func isLatinLower(r rune) bool {
+	return r >= 'a' && r <= 'z'
 }
 
 func truncate(s string, n int) string {
