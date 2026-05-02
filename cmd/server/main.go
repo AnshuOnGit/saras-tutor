@@ -143,10 +143,10 @@ func main() {
 
 	// ── Studio API (existing) ─────────────────────────────────────────
 	api := r.Group("/api")
-	api.GET("/models", h.ListModels)
-	api.POST("/extract", h.Extract)
-	api.GET("/extractions", h.ListExtractions)
-	api.POST("/chat", h.Chat)
+	api.GET("/models", authMiddleware.RequireAuth(), h.ListModels)
+	api.POST("/extract", authMiddleware.RequireAuth(), h.Extract)
+	api.GET("/extractions", authMiddleware.RequireAuth(), h.ListExtractions)
+	api.POST("/chat", authMiddleware.RequireAuth(), h.Chat)
 
 	// ── Auth API (v1) ─────────────────────────────────────────────────
 	v1 := r.Group("/api/v1")

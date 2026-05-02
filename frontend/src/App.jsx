@@ -28,7 +28,6 @@ export default function App() {
 }
 
 function Studio({ user, logout }) {
-  const USER_ID = user.id;
   // ── Models ─────────────────────────────────────────────────────
   const [categories, setCategories] = useState([]);
   const [activeTab, setActiveTab] = useState("OCR");
@@ -81,7 +80,7 @@ function Studio({ user, logout }) {
 
   // ── Load extractions ──────────────────────────────────────────
   useEffect(() => {
-    fetch(`${API_BASE}/api/extractions?session_id=${SESSION_ID}&user_id=${USER_ID}`)
+    fetch(`${API_BASE}/api/extractions?session_id=${SESSION_ID}`)
       .then((r) => r.json())
       .then((data) => setExtractions(data.extractions || []))
       .catch(console.error);
@@ -145,7 +144,6 @@ function Studio({ user, logout }) {
     try {
       const fd = new FormData();
       fd.append("session_id", SESSION_ID);
-      fd.append("user_id", USER_ID);
       fd.append("model", selectedOCR);
       fd.append("image", imageFile);
       const res = await fetch(`${API_BASE}/api/extract`, { method: "POST", body: fd });
@@ -262,7 +260,6 @@ function Studio({ user, logout }) {
 
       const body = {
         session_id: SESSION_ID,
-        user_id: USER_ID,
         conversation_id: conversationId,
         model: selectedSolver,
         intent,

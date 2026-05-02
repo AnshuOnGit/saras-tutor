@@ -19,6 +19,7 @@ import (
 
 	"saras-tutor/internal/config"
 	"saras-tutor/internal/llm"
+	"saras-tutor/internal/middleware"
 	"saras-tutor/internal/storage"
 
 	"github.com/gin-gonic/gin"
@@ -174,14 +175,17 @@ func (h *Handler) ListModels(c *gin.Context) {
 // image extraction, persists the result, and returns it.
 func (h *Handler) Extract(c *gin.Context) {
 	sessionID := c.PostForm("session_id")
-	userID := c.PostForm("user_id")
 	modelID := c.PostForm("model")
-	if sessionID == "" {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "session_id required"})
+
+	uid, ok := middleware.GetUserID(c)
+	if !ok {
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "unauthorized"})
 		return
 	}
-	if userID == "" {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "user_id required"})
+	userID := uid.String()
+
+	if sessionID == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "session_id required"})
 		return
 	}
 	if modelID == "" {
@@ -287,16 +291,12 @@ func (h *Handler) Extract(c *gin.Context) {
 
 // ListExtractions returns all extractions for a session, newest first.
 func (h *Handler) ListExtractions(c *gin.Context) {
-	sessionID := c.Query("session_id")
-	userID := c.Query("user_id")
-	if sessionID == "" {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "session_id required"})
+	uid, ok := middleware.GetUserID(c)
+	if !ok {
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "unauthorized"})
 		return
 	}
-	if userID == "" {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "user_id required"})
-		return
-	}
+	userID := uid.String()
 	rows, err := h.pool.Query(c.Request.Context(),
 		`SELECT id, session_id, user_id, image_url, extracted_text, model_id, created_at
 		 FROM extractions WHERE user_id = $1 ORDER BY created_at DESC LIMIT 10`, userID)
@@ -325,7 +325,7 @@ func (h *Handler) ListExtractions(c *gin.Context) {
 // ChatRequest is the JSON body for POST /api/chat.
 type ChatRequest struct {
 	SessionID      string     `json:"session_id" binding:"required"`
-	UserID         string     `json:"user_id" binding:"required"`
+	UserID         string     `json:"user_id"`  // ignored; overridden from JWT
 	ConversationID string     `json:"conversation_id" binding:"required"`
 	ModelID        string     `json:"model"`
 	Intent         string     `json:"intent"`  // solve | hint | evaluate | followup
@@ -357,6 +357,14 @@ func (h *Handler) Chat(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 		return
 	}
+
+	// Override user_id from JWT claims (prevent impersonation)
+	uid, ok := middleware.GetUserID(c)
+	if !ok {
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "unauthorized"})
+		return
+	}
+	req.UserID = uid.String()
 
 	modelID := req.ModelID
 	if modelID == "" {
