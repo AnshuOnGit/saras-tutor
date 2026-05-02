@@ -49,6 +49,29 @@ function preprocessMath(text) {
     segment = segment.replace(/\r(?=[a-z])/g, '\\r');
     segment = segment.replace(/\t(?=[a-z])/g, '\\t');
 
+    // ── Fix escaped dollar signs inside math: $-\$ → $- (remove stray \$) ──
+    segment = segment.replace(/\$([^$]*)\\\$/g, '$$$1$$');
+
+    // ── Fix double-escaped backslashes (LLM emitting \\frac instead of \frac) ──
+    // Only collapse \\\\ → \\ when followed by a known LaTeX command name
+    segment = segment.replace(/\\\\(frac|sqrt|left|right|text|vec|hat|overrightarrow|overline|underline|boxed|mathrm|mathbf|mathit|sin|cos|tan|log|ln|lim|sum|int|prod|infty|alpha|beta|gamma|delta|theta|lambda|mu|sigma|omega|pi|Delta|Gamma|Omega|Sigma|Pi|Theta|Lambda|times|div|pm|mp|neq|leq|geq|approx|equiv|cdot|ldots|cdots|ddots|vdots|quad|qquad|hspace|space|,|;|!|>)\b/g, '\\$1');
+
+    // ── Fix unmatched \left / \right ──
+    segment = segment.replace(/\\left\(/g, '⟬LEFT_PAREN⟭');
+    segment = segment.replace(/\\right\)/g, '⟬RIGHT_PAREN⟭');
+    segment = segment.replace(/\\left\[/g, '⟬LEFT_BRACKET⟭');
+    segment = segment.replace(/\\right\]/g, '⟬RIGHT_BRACKET⟭');
+    segment = fixUnmatchedDelimiters(segment);
+
+    // ── Fix broken dollar-sign patterns from LLM ──
+    // Pattern: $-$\frac... or $+$\frac... → merge into $-\frac...$
+    // The model splits sign into its own $-$ then leaves the command bare
+    segment = segment.replace(/\$([+-])\$\s*(\\(?:frac|sqrt|left|text|mathrm)[^$]*?)(?=\$|$)/g, '$$$1$2');
+    // Pattern: $ $\frac... (empty space between dollars, bare command follows)
+    segment = segment.replace(/\$\s+\$\s*(\\(?:frac|sqrt|left|text|mathrm))/g, '$$$1');
+    // Pattern: bare \frac{...}{...} not inside $ — wrap it
+    segment = segment.replace(/(?<!\$)(\\frac\{[^}]*\}\{[^}]*\})(?!\$)/g, '$$$1$$');
+
     // ── Convert Unicode math symbols to LaTeX (outside existing $ blocks) ──
     segment = convertUnicodeMath(segment);
 
@@ -85,6 +108,47 @@ function preprocessMath(text) {
   }
 
   return parts.join("");
+}
+
+/* Fix unmatched \left / \right pairs — restore matched ones, downgrade unmatched to plain chars */
+function fixUnmatchedDelimiters(text) {
+  const leftParens = [];
+  const rightParens = [];
+  const leftBrackets = [];
+  const rightBrackets = [];
+
+  let idx = 0;
+  const LP = '⟬LEFT_PAREN⟭', RP = '⟬RIGHT_PAREN⟭';
+  const LB = '⟬LEFT_BRACKET⟭', RB = '⟬RIGHT_BRACKET⟭';
+
+  // Find all positions
+  while ((idx = text.indexOf(LP, idx)) !== -1) { leftParens.push(idx); idx += LP.length; }
+  idx = 0;
+  while ((idx = text.indexOf(RP, idx)) !== -1) { rightParens.push(idx); idx += RP.length; }
+  idx = 0;
+  while ((idx = text.indexOf(LB, idx)) !== -1) { leftBrackets.push(idx); idx += LB.length; }
+  idx = 0;
+  while ((idx = text.indexOf(RB, idx)) !== -1) { rightBrackets.push(idx); idx += RB.length; }
+
+  // If counts match, restore all as \left/\right
+  // If unmatched, downgrade extras to plain delimiters
+  if (leftParens.length === rightParens.length) {
+    text = text.replace(/⟬LEFT_PAREN⟭/g, '\\left(');
+    text = text.replace(/⟬RIGHT_PAREN⟭/g, '\\right)');
+  } else {
+    text = text.replace(/⟬LEFT_PAREN⟭/g, '(');
+    text = text.replace(/⟬RIGHT_PAREN⟭/g, ')');
+  }
+
+  if (leftBrackets.length === rightBrackets.length) {
+    text = text.replace(/⟬LEFT_BRACKET⟭/g, '\\left[');
+    text = text.replace(/⟬RIGHT_BRACKET⟭/g, '\\right]');
+  } else {
+    text = text.replace(/⟬LEFT_BRACKET⟭/g, '[');
+    text = text.replace(/⟬RIGHT_BRACKET⟭/g, ']');
+  }
+
+  return text;
 }
 
 /* Convert common Unicode math characters to KaTeX equivalents when outside $ blocks */
