@@ -323,6 +323,11 @@ function Studio({ user, logout }) {
                 setMessages((prev) =>
                   prev.map((m) => (m.id === assistantId ? { ...m, content: fullText } : m))
                 );
+              } else if (ev.type === "full_text") {
+                fullText = ev.text;
+                setMessages((prev) =>
+                  prev.map((m) => (m.id === assistantId ? { ...m, content: fullText } : m))
+                );
               }
             } catch {}
           }

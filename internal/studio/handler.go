@@ -662,6 +662,14 @@ RULES:
 		flusher.Flush()
 	}
 
+	// Post-process: fix Unicode math symbols and unbalanced $ in solver output
+	correctedResponse := fixLaTeXInMarkdown(fullResponse.String())
+
+	// Send corrected full text so frontend can replace its buffered version
+	corrData, _ := json.Marshal(map[string]string{"type": "full_text", "text": correctedResponse})
+	fmt.Fprintf(c.Writer, "data: %s\n\n", corrData)
+	flusher.Flush()
+
 	fmt.Fprintf(c.Writer, "data: [DONE]\n\n")
 	flusher.Flush()
 
@@ -675,7 +683,7 @@ RULES:
 		assistantIntent = "solve"
 	}
 	meta := map[string]string{"model_id": modelID, "session_id": req.SessionID}
-	if err := h.saveMessage(saveCtx, req.ConversationID, req.UserID, "assistant", assistantIntent, fullResponse.String(), nil, nil, meta); err != nil {
+	if err := h.saveMessage(saveCtx, req.ConversationID, req.UserID, "assistant", assistantIntent, correctedResponse, nil, nil, meta); err != nil {
 		logger.Error().Err(err).Msg("save assistant message")
 	}
 }
