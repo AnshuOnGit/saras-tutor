@@ -39,6 +39,7 @@ function Studio({ user, logout }) {
   const [imagePreview, setImagePreview] = useState(null);
   const [extracting, setExtracting] = useState(false);
   const fileInputRef = useRef(null);
+  const cameraInputRef = useRef(null);
   const [dragOverUpload, setDragOverUpload] = useState(false);
 
   // ── Extractions ────────────────────────────────────────────────
@@ -116,8 +117,16 @@ function Studio({ user, logout }) {
   // ── Upload handlers ───────────────────────────────────────────
   const handleFile = (file) => {
     if (!file || !file.type.startsWith("image/")) return;
-    // Show cropper first
+    // Show cropper for camera shots
     setCropperSrc(URL.createObjectURL(file));
+    if (cameraInputRef.current) cameraInputRef.current.value = "";
+  };
+
+  const handleGalleryFile = (file) => {
+    if (!file || !file.type.startsWith("image/")) return;
+    // Gallery images go straight to preview (no cropping)
+    setImageFile(file);
+    setImagePreview(URL.createObjectURL(file));
     if (fileInputRef.current) fileInputRef.current.value = "";
   };
 
@@ -422,12 +431,19 @@ function Studio({ user, logout }) {
 
         {/* Upload area */}
         <div className="upload-section">
-          <div className={`upload-drop-zone ${dragOverUpload ? "drag-over" : ""}`} onClick={() => fileInputRef.current?.click()} onDragOver={(e) => { e.preventDefault(); setDragOverUpload(true); }} onDragLeave={() => setDragOverUpload(false)} onDrop={(e) => { e.preventDefault(); setDragOverUpload(false); handleFile(e.dataTransfer.files[0]); }}>
-            <div className="icon">📷</div>
-            <div className="label">Drop an image or click to upload</div>
-            <div className="hint">Supports JPG, PNG — will be resized to max 1568px</div>
+          <div className={`upload-drop-zone ${dragOverUpload ? "drag-over" : ""}`} onDragOver={(e) => { e.preventDefault(); setDragOverUpload(true); }} onDragLeave={() => setDragOverUpload(false)} onDrop={(e) => { e.preventDefault(); setDragOverUpload(false); handleGalleryFile(e.dataTransfer.files[0]); }}>
+            <div className="upload-buttons">
+              <button className="btn btn-gallery" type="button" onClick={() => fileInputRef.current?.click()}>
+                🖼️ Gallery
+              </button>
+              <button className="btn btn-camera" type="button" onClick={() => cameraInputRef.current?.click()}>
+                📷 Camera
+              </button>
+            </div>
+            <div className="hint">Select from gallery or take a photo</div>
           </div>
-          <input ref={fileInputRef} type="file" accept="image/*" capture="environment" hidden onChange={(e) => handleFile(e.target.files[0])} />
+          <input ref={fileInputRef} type="file" accept="image/*" hidden onChange={(e) => handleGalleryFile(e.target.files[0])} />
+          <input ref={cameraInputRef} type="file" accept="image/*" capture="environment" hidden onChange={(e) => handleFile(e.target.files[0])} />
 
           {imagePreview && (
             <div className="upload-preview">

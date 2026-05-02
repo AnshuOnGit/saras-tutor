@@ -298,7 +298,6 @@ body,
   border-radius: var(--radius-md);
   padding: 28px 20px;
   text-align: center;
-  cursor: pointer;
   transition: var(--transition);
 }
 
@@ -306,6 +305,42 @@ body,
 .upload-drop-zone.drag-over {
   border-color: var(--accent-ocr);
   background: var(--accent-ocr-bg);
+}
+
+.upload-buttons {
+  display: flex;
+  gap: 12px;
+  justify-content: center;
+  margin-bottom: 10px;
+}
+
+.btn-gallery,
+.btn-camera {
+  padding: 10px 20px;
+  border-radius: var(--radius-md);
+  font-size: 14px;
+  font-weight: 500;
+  cursor: pointer;
+  border: 1px solid var(--border);
+  transition: var(--transition);
+}
+
+.btn-gallery {
+  background: var(--surface-2);
+  color: var(--text-primary);
+}
+.btn-gallery:hover {
+  background: var(--accent-ocr-bg);
+  border-color: var(--accent-ocr);
+}
+
+.btn-camera {
+  background: var(--accent-ocr);
+  color: #fff;
+  border-color: var(--accent-ocr);
+}
+.btn-camera:hover {
+  opacity: 0.9;
 }
 
 .upload-drop-zone .icon {
