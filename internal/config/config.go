@@ -81,6 +81,7 @@ type AuthConfig struct {
 	GoogleClientSecret string
 	GoogleRedirectURL  string
 	FrontendURL        string
+	CookieDomain       string
 	StateExpiry        time.Duration
 }
 
@@ -140,6 +141,7 @@ func Load() *Config {
 			GoogleClientSecret: getEnv("GOOGLE_CLIENT_SECRET", ""),
 			GoogleRedirectURL:  getEnv("GOOGLE_REDIRECT_URL", "http://localhost:8090/api/v1/auth/google/callback"),
 			FrontendURL:        getEnv("FRONTEND_URL", "http://localhost:5173"),
+			CookieDomain:       getEnv("COOKIE_DOMAIN", ""),
 			StateExpiry:        getDurationEnv("OAUTH_STATE_EXPIRY", 10*time.Minute),
 		},
 		JWT: JWTConfig{

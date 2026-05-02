@@ -100,6 +100,7 @@ func main() {
 		authService,
 		userRepo,
 		cfg.Auth.FrontendURL,
+		cfg.Auth.CookieDomain,
 		cfg.IsProduction(),
 	)
 

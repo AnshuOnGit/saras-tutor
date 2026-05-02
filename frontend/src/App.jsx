@@ -66,7 +66,7 @@ function Studio({ user, logout }) {
 
   // ── Load models ────────────────────────────────────────────────
   useEffect(() => {
-    fetch(`${API_BASE}/api/models`)
+    fetch(`${API_BASE}/api/models`, { credentials: "include" })
       .then((r) => r.json())
       .then((data) => {
         setCategories(data.categories || []);
@@ -80,7 +80,7 @@ function Studio({ user, logout }) {
 
   // ── Load extractions ──────────────────────────────────────────
   useEffect(() => {
-    fetch(`${API_BASE}/api/extractions?session_id=${SESSION_ID}`)
+    fetch(`${API_BASE}/api/extractions?session_id=${SESSION_ID}`, { credentials: "include" })
       .then((r) => r.json())
       .then((data) => setExtractions(data.extractions || []))
       .catch(console.error);
@@ -146,7 +146,7 @@ function Studio({ user, logout }) {
       fd.append("session_id", SESSION_ID);
       fd.append("model", selectedOCR);
       fd.append("image", imageFile);
-      const res = await fetch(`${API_BASE}/api/extract`, { method: "POST", body: fd });
+      const res = await fetch(`${API_BASE}/api/extract`, { method: "POST", body: fd, credentials: "include" });
       if (!res.ok) {
         const err = await res.json();
         alert("Extraction failed: " + (err.error || res.statusText));
@@ -277,6 +277,7 @@ function Studio({ user, logout }) {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify(body),
+          credentials: "include",
         });
 
         if (!res.ok) {

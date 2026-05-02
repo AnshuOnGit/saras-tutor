@@ -16,6 +16,7 @@ type AuthHandler struct {
 	authService  *services.AuthService
 	userRepo     *repository.UserRepository
 	frontendURL  string
+	cookieDomain string
 	secureCookie bool
 }
 
@@ -23,12 +24,14 @@ func NewAuthHandler(
 	authService *services.AuthService,
 	userRepo *repository.UserRepository,
 	frontendURL string,
+	cookieDomain string,
 	secureCookie bool,
 ) *AuthHandler {
 	return &AuthHandler{
 		authService:  authService,
 		userRepo:     userRepo,
 		frontendURL:  frontendURL,
+		cookieDomain: cookieDomain,
 		secureCookie: secureCookie,
 	}
 }
@@ -247,7 +250,7 @@ func (h *AuthHandler) setAuthCookies(c *gin.Context, tokenPair *services.TokenPa
 		tokenPair.AccessToken,
 		int(time.Until(tokenPair.ExpiresAt).Seconds()),
 		"/",
-		"",
+		h.cookieDomain,
 		h.secureCookie,
 		true,
 	)
@@ -257,15 +260,15 @@ func (h *AuthHandler) setAuthCookies(c *gin.Context, tokenPair *services.TokenPa
 		tokenPair.RefreshToken,
 		60*60*24*7, // 7 days
 		"/api/v1/auth",
-		"",
+		h.cookieDomain,
 		h.secureCookie,
 		true,
 	)
 }
 
 func (h *AuthHandler) clearAuthCookies(c *gin.Context) {
-	c.SetCookie("access_token", "", -1, "/", "", h.secureCookie, true)
-	c.SetCookie("refresh_token", "", -1, "/api/v1/auth", "", h.secureCookie, true)
+	c.SetCookie("access_token", "", -1, "/", h.cookieDomain, h.secureCookie, true)
+	c.SetCookie("refresh_token", "", -1, "/api/v1/auth", h.cookieDomain, h.secureCookie, true)
 }
 
 func (h *AuthHandler) redirectWithError(c *gin.Context, errorCode, message string) {
