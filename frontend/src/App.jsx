@@ -328,6 +328,24 @@ function Studio({ user, logout }) {
                 setMessages((prev) =>
                   prev.map((m) => (m.id === assistantId ? { ...m, content: fullText } : m))
                 );
+              } else if (ev.type === "warning") {
+                // Model is still thinking — show inline warning but keep streaming
+                setMessages((prev) =>
+                  prev.map((m) =>
+                    m.id === assistantId
+                      ? { ...m, content: (m.content || "") + "\n\n" + ev.text + "\n\n", warning: true }
+                      : m
+                  )
+                );
+              } else if (ev.type === "error") {
+                // Model timed out
+                setMessages((prev) =>
+                  prev.map((m) =>
+                    m.id === assistantId
+                      ? { ...m, content: ev.text, error: true }
+                      : m
+                  )
+                );
               }
             } catch {}
           }

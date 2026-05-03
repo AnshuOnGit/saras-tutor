@@ -254,20 +254,6 @@ func (h *Handler) Extract(c *gin.Context) {
 		return
 	}
 
-	// Validate extracted content is PCMB-only
-	safety := ValidateContent(ctx, gatekeeperConfig{
-		apiKey:  h.cfg.LLM.APIKey,
-		baseURL: h.cfg.LLM.BaseURL,
-		userID:  h.cfg.LLM.UserID,
-	}, extractedText)
-	if !safety.Safe {
-		c.JSON(http.StatusBadRequest, gin.H{
-			"error":  "This content is not supported. Saras only handles Physics, Chemistry, Math, and Biology questions.",
-			"reason": safety.Reason,
-		})
-		return
-	}
-
 	// Persist
 	extraction := &Extraction{
 		ID:            uuid.New().String(),
@@ -650,21 +636,78 @@ RULES:
 		return
 	}
 
+	const firstByteTimeout = 2 * time.Minute
+	const extendedTimeout = 5 * time.Minute
+
 	var fullResponse strings.Builder
 	tokenCh := make(chan string, 128)
+	streamErrCh := make(chan error, 1)
 	go func() {
 		defer close(tokenCh)
-		_, _ = solverClient.StreamComplete(ctx, messages, func(token string) error {
+		_, err := solverClient.StreamComplete(ctx, messages, func(token string) error {
 			tokenCh <- token
 			return nil
 		})
+		if err != nil {
+			streamErrCh <- err
+		}
 	}()
 
-	for token := range tokenCh {
-		fullResponse.WriteString(token)
-		data, _ := json.Marshal(map[string]string{"type": "token", "text": token})
-		fmt.Fprintf(c.Writer, "data: %s\n\n", data)
-		flusher.Flush()
+	gotFirstToken := false
+	firstByteTimer := time.NewTimer(firstByteTimeout)
+	defer firstByteTimer.Stop()
+	extendedTimer := time.NewTimer(firstByteTimeout + extendedTimeout)
+	defer extendedTimer.Stop()
+	warningSent := false
+
+	streamLoop:
+	for {
+		select {
+		case token, ok := <-tokenCh:
+			if !ok {
+				break streamLoop
+			}
+			if !gotFirstToken {
+				gotFirstToken = true
+				firstByteTimer.Stop()
+			}
+			fullResponse.WriteString(token)
+			data, _ := json.Marshal(map[string]string{"type": "token", "text": token})
+			fmt.Fprintf(c.Writer, "data: %s\n\n", data)
+			flusher.Flush()
+
+		case <-firstByteTimer.C:
+			if !gotFirstToken && !warningSent {
+				warningSent = true
+				// Send a warning event — the model is still thinking
+				warnMsg := map[string]string{
+					"type":    "warning",
+					"text":    "⏳ **" + modelID + "** is still thinking — reasoning models can take a while on complex problems. You can open another chat tab and try a different solver (e.g. DeepSeek V4 Pro or Qwen3-Next 80B) while this one continues. This connection will stay alive for 5 more minutes.",
+					"modelId": modelID,
+				}
+				warnData, _ := json.Marshal(warnMsg)
+				fmt.Fprintf(c.Writer, "data: %s\n\n", warnData)
+				flusher.Flush()
+				logger.Warn().Str("model", modelID).Msg("solver: first-byte timeout (2m), warning sent to client")
+			}
+
+		case <-extendedTimer.C:
+			// Final timeout — give up
+			timeoutMsg := map[string]string{
+				"type":    "error",
+				"text":    "⏱️ **" + modelID + "** did not respond within 7 minutes. Please try a different solver model — DeepSeek V4 Pro and Qwen3-Next 80B are usually faster.",
+				"modelId": modelID,
+			}
+			timeoutData, _ := json.Marshal(timeoutMsg)
+			fmt.Fprintf(c.Writer, "data: %s\n\n", timeoutData)
+			fmt.Fprintf(c.Writer, "data: [DONE]\n\n")
+			flusher.Flush()
+			logger.Error().Str("model", modelID).Msg("solver: extended timeout (7m), aborting stream")
+			return
+
+		case <-ctx.Done():
+			break streamLoop
+		}
 	}
 
 	// Post-process: fix Unicode math symbols and unbalanced $ in solver output
