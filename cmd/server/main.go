@@ -148,6 +148,8 @@ func main() {
 	api.POST("/extract", authMiddleware.RequireAuth(), h.Extract)
 	api.GET("/extractions", authMiddleware.RequireAuth(), h.ListExtractions)
 	api.POST("/chat", authMiddleware.RequireAuth(), h.Chat)
+	api.GET("/workspaces", authMiddleware.RequireAuth(), h.ListWorkspaces)
+	api.GET("/workspaces/:id", authMiddleware.RequireAuth(), h.GetWorkspace)
 
 	// ── Auth API (v1) ─────────────────────────────────────────────────
 	v1 := r.Group("/api/v1")

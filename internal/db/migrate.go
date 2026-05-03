@@ -153,6 +153,22 @@ CREATE INDEX IF NOT EXISTS idx_studio_messages_auth_user ON studio_messages(auth
 ALTER TABLE extractions ADD COLUMN IF NOT EXISTS latex_verified BOOLEAN NOT NULL DEFAULT false;
 `,
 		},
+		{
+			name: "009_create_workspaces_table",
+			sql: `
+CREATE TABLE IF NOT EXISTS workspaces (
+    id              TEXT PRIMARY KEY,
+    user_id         TEXT NOT NULL,
+    title           TEXT NOT NULL DEFAULT '',
+    solver_model_id TEXT NOT NULL DEFAULT '',
+    created_at      TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    updated_at      TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+CREATE INDEX IF NOT EXISTS idx_workspaces_user_updated
+    ON workspaces(user_id, updated_at DESC);
+`,
+		},
 	}
 }
 

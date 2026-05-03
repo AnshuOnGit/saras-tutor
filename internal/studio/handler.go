@@ -14,6 +14,7 @@ import (
 	"net/http"
 	"saras-tutor/internal/logger"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 
@@ -327,6 +328,183 @@ func (h *Handler) ListExtractions(c *gin.Context) {
 		list = []Extraction{}
 	}
 	c.JSON(http.StatusOK, gin.H{"extractions": list})
+}
+
+// ─── GET /api/workspaces ──────────────────────────────────────────────
+
+// WorkspaceSummary is a lightweight workspace entry for listing.
+type WorkspaceSummary struct {
+	ID            string    `json:"id"`
+	Title         string    `json:"title"`
+	SolverModelID string    `json:"solver_model_id"`
+	MessageCount  int       `json:"message_count"`
+	CreatedAt     time.Time `json:"created_at"`
+	UpdatedAt     time.Time `json:"updated_at"`
+}
+
+// ListWorkspaces returns the user's workspaces ordered by most recently updated.
+func (h *Handler) ListWorkspaces(c *gin.Context) {
+	uid, ok := middleware.GetUserID(c)
+	if !ok {
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "unauthorized"})
+		return
+	}
+	userID := uid.String()
+
+	limitStr := c.DefaultQuery("limit", "10")
+	offsetStr := c.DefaultQuery("offset", "0")
+	limit := 10
+	offset := 0
+	if v, err := strconv.Atoi(limitStr); err == nil && v > 0 && v <= 50 {
+		limit = v
+	}
+	if v, err := strconv.Atoi(offsetStr); err == nil && v >= 0 {
+		offset = v
+	}
+
+	ctx := c.Request.Context()
+
+	rows, err := h.pool.Query(ctx, `
+		SELECT w.id, w.title, w.solver_model_id, w.created_at, w.updated_at,
+		       COUNT(m.id)::int AS message_count
+		FROM workspaces w
+		LEFT JOIN studio_messages m ON m.conversation_id = w.id
+		WHERE w.user_id = $1
+		GROUP BY w.id
+		ORDER BY w.updated_at DESC
+		LIMIT $2 OFFSET $3
+	`, userID, limit+1, offset)
+	if err != nil {
+		logger.Error().Err(err).Msg("list workspaces query failed")
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "query failed"})
+		return
+	}
+	defer rows.Close()
+
+	var list []WorkspaceSummary
+	for rows.Next() {
+		var ws WorkspaceSummary
+		if err := rows.Scan(&ws.ID, &ws.Title, &ws.SolverModelID, &ws.CreatedAt, &ws.UpdatedAt, &ws.MessageCount); err != nil {
+			continue
+		}
+		list = append(list, ws)
+	}
+
+	hasMore := len(list) > limit
+	if hasMore {
+		list = list[:limit]
+	}
+	if list == nil {
+		list = []WorkspaceSummary{}
+	}
+
+	c.JSON(http.StatusOK, gin.H{"workspaces": list, "has_more": hasMore})
+}
+
+// ─── GET /api/workspaces/:id ───────────────────────────────────────────
+
+// GetWorkspace returns the full state needed to restore a workspace.
+func (h *Handler) GetWorkspace(c *gin.Context) {
+	uid, ok := middleware.GetUserID(c)
+	if !ok {
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "unauthorized"})
+		return
+	}
+	userID := uid.String()
+	wsID := c.Param("id")
+
+	ctx := c.Request.Context()
+
+	// 1. Fetch workspace (ownership check)
+	var ws WorkspaceSummary
+	err := h.pool.QueryRow(ctx, `
+		SELECT id, title, solver_model_id, created_at, updated_at
+		FROM workspaces WHERE id = $1 AND user_id = $2
+	`, wsID, userID).Scan(&ws.ID, &ws.Title, &ws.SolverModelID, &ws.CreatedAt, &ws.UpdatedAt)
+	if err != nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "workspace not found"})
+		return
+	}
+
+	// 2. Fetch all messages in order
+	type wsMessage struct {
+		ID                    string  `json:"id"`
+		ConversationID        string  `json:"conversation_id"`
+		Role                  string  `json:"role"`
+		Content               string  `json:"content"`
+		ModelID               *string `json:"model_id,omitempty"`
+		AttemptExtractionID   *string `json:"attempt_extraction_id,omitempty"`
+		QuestionExtractionID  *string `json:"question_extraction_id,omitempty"`
+		CreatedAt             string  `json:"created_at"`
+	}
+
+	msgRows, err := h.pool.Query(ctx, `
+		SELECT id, conversation_id, role, content, model_id,
+		       attempt_extraction_id, question_extraction_id, created_at
+		FROM studio_messages
+		WHERE conversation_id = $1
+		ORDER BY created_at ASC
+	`, wsID)
+	if err != nil {
+		logger.Error().Err(err).Msg("get workspace messages failed")
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "query failed"})
+		return
+	}
+	defer msgRows.Close()
+
+	var messages []wsMessage
+	for msgRows.Next() {
+		var m wsMessage
+		if err := msgRows.Scan(&m.ID, &m.ConversationID, &m.Role, &m.Content, &m.ModelID,
+			&m.AttemptExtractionID, &m.QuestionExtractionID, &m.CreatedAt); err != nil {
+			continue
+		}
+		messages = append(messages, m)
+	}
+	if messages == nil {
+		messages = []wsMessage{}
+	}
+
+	// 3. Fetch extractions referenced by this workspace's messages
+	extRows, err := h.pool.Query(ctx, `
+		SELECT DISTINCT e.id, e.original_text, e.latex_verified, e.created_at
+		FROM extractions e
+		WHERE e.id IN (
+			SELECT question_extraction_id FROM studio_messages WHERE conversation_id = $1 AND question_extraction_id IS NOT NULL
+			UNION
+			SELECT attempt_extraction_id FROM studio_messages WHERE conversation_id = $1 AND attempt_extraction_id IS NOT NULL
+		)
+	`, wsID)
+	if err != nil {
+		logger.Error().Err(err).Msg("get workspace extractions failed")
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "query failed"})
+		return
+	}
+	defer extRows.Close()
+
+	type wsExtraction struct {
+		ID            string `json:"id"`
+		OriginalText  string `json:"original_text"`
+		LatexVerified bool   `json:"latex_verified"`
+		CreatedAt     string `json:"created_at"`
+	}
+	var extractions []wsExtraction
+	for extRows.Next() {
+		var ex wsExtraction
+		if err := extRows.Scan(&ex.ID, &ex.OriginalText, &ex.LatexVerified, &ex.CreatedAt); err != nil {
+			continue
+		}
+		extractions = append(extractions, ex)
+	}
+	if extractions == nil {
+		extractions = []wsExtraction{}
+	}
+
+	c.JSON(http.StatusOK, gin.H{
+		"workspace":   ws,
+		"messages":    messages,
+		"extractions": extractions,
+	})
 }
 
 // ─── POST /api/chat ───────────────────────────────────────────────────
@@ -672,6 +850,30 @@ RULES:
 	if req.Intent == "followup" && req.Message != "" {
 		if err := h.saveMessage(ctx, req.ConversationID, req.UserID, "user", "followup", req.Message, nil, nil, nil); err != nil {
 			logger.Error().Err(err).Msg("save followup message")
+		}
+	}
+
+	// ── Phase A2: Upsert workspace row ──
+	{
+		// Derive title from first question slot (truncated to 120 chars)
+		title := "Untitled workspace"
+		for _, s := range slots {
+			if s.Role == "question" && s.Text != "" {
+				t := strings.TrimSpace(s.Text)
+				if len(t) > 120 {
+					t = t[:120] + "…"
+				}
+				title = t
+				break
+			}
+		}
+		_, upsertErr := h.pool.Exec(ctx, `
+			INSERT INTO workspaces (id, user_id, title, solver_model_id, created_at, updated_at)
+			VALUES ($1, $2, $3, $4, NOW(), NOW())
+			ON CONFLICT (id) DO UPDATE SET solver_model_id = $4, updated_at = NOW()
+		`, req.ConversationID, req.UserID, title, modelID)
+		if upsertErr != nil {
+			logger.Error().Err(upsertErr).Msg("upsert workspace")
 		}
 	}
 

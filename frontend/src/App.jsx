@@ -62,6 +62,12 @@ function Studio({ user, logout }) {
   const chatEndRef = useRef(null);
   const solverBodyRef = useRef(null);
 
+  // ── Workspaces (persistence) ───────────────────────────────────
+  const [workspaces, setWorkspaces] = useState([]);
+  const [workspacesOpen, setWorkspacesOpen] = useState(false);
+  const [loadingWorkspace, setLoadingWorkspace] = useState(false);
+  const [activeWorkspaceId, setActiveWorkspaceId] = useState(null);
+
   // ── Mobile panel toggle ────────────────────────────────────────
   const [mobilePanel, setMobilePanel] = useState("extract"); // "extract" | "workspace"
 
@@ -86,6 +92,78 @@ function Studio({ user, logout }) {
       .then((data) => setExtractions(data.extractions || []))
       .catch(console.error);
   }, []);
+
+  // ── Load workspaces on mount ──────────────────────────────────
+  const refreshWorkspaces = useCallback(() => {
+    fetch(`${API_BASE}/api/workspaces?limit=20`, { credentials: "include" })
+      .then((r) => r.json())
+      .then((data) => setWorkspaces(data.workspaces || []))
+      .catch(console.error);
+  }, []);
+
+  useEffect(() => { refreshWorkspaces(); }, [refreshWorkspaces]);
+
+  const loadWorkspace = useCallback(async (wsId) => {
+    if (loadingWorkspace || streaming) return;
+    setLoadingWorkspace(true);
+    try {
+      const res = await fetch(`${API_BASE}/api/workspaces/${wsId}`, { credentials: "include" });
+      if (!res.ok) throw new Error("Failed to load workspace");
+      const data = await res.json();
+      const ws = data.workspace;
+      const msgs = data.messages || [];
+      const exts = data.extractions || [];
+
+      // Build extraction lookup
+      const extMap = {};
+      for (const ex of exts) extMap[ex.id] = ex;
+
+      // Restore conversation ID & active workspace
+      setConversationId(ws.id);
+      setActiveWorkspaceId(ws.id);
+
+      // Restore solver model if available
+      if (ws.solver_model_id) setSelectedSolver(ws.solver_model_id);
+
+      // Rebuild workspace slots from user messages that have extraction IDs
+      const restoredSlots = [];
+      const seenExtIds = new Set();
+      for (const m of msgs) {
+        const extId = m.question_extraction_id || m.attempt_extraction_id;
+        if (m.role === "user" && extId && !seenExtIds.has(extId)) {
+          seenExtIds.add(extId);
+          const ext = extMap[extId];
+          if (ext) {
+            restoredSlots.push({
+              extraction: { id: ext.id, extracted_text: ext.original_text, model_id: "restored", created_at: ext.created_at, latex_verified: ext.latex_verified },
+              role: m.question_extraction_id ? "question" : "attempt",
+              editedText: m.content,
+            });
+          }
+        }
+      }
+      setWorkspace(restoredSlots);
+
+      // Rebuild chat messages (skip extraction slot messages, keep followups + assistant)
+      const chatMsgs = [];
+      for (const m of msgs) {
+        if (m.role === "user" && (m.question_extraction_id || m.attempt_extraction_id)) continue;
+        chatMsgs.push({
+          id: m.id,
+          role: m.role,
+          content: m.content,
+          model: m.model_id || undefined,
+        });
+      }
+      setMessages(chatMsgs);
+      setFollowUp("");
+      setMobilePanel("workspace");
+    } catch (e) {
+      alert("Failed to load workspace: " + e.message);
+    } finally {
+      setLoadingWorkspace(false);
+    }
+  }, [loadingWorkspace, streaming]);
 
   // ── Auto-scroll chat (only if user is near the bottom) ─────
   const userScrolledUp = useRef(false);
@@ -237,10 +315,14 @@ function Studio({ user, logout }) {
     );
   };
 
-  const clearConversation = () => {
+  const newWorkspace = () => {
     setMessages([]);
     setWorkspace([]);
     setConversationId(crypto.randomUUID());
+    setActiveWorkspaceId(null);
+    setFollowUp("");
+    setEditingSlotId(null);
+    refreshWorkspaces();
   };
 
   // ── Stream SSE ────────────────────────────────────────────────
@@ -383,9 +465,10 @@ function Studio({ user, logout }) {
       } finally {
         streamingRef.current = false;
         setStreaming(false);
+        refreshWorkspaces();
       }
     },
-    [selectedSolver, workspace, messages, conversationId, categories]
+    [selectedSolver, workspace, messages, conversationId, categories, refreshWorkspaces]
   );
 
   const handleFollowUp = (e) => {
@@ -552,6 +635,37 @@ function Studio({ user, logout }) {
             })
           )}
         </div>
+
+        {/* Recent Workspaces */}
+        <div className="workspaces-section">
+          <button className="workspaces-toggle" onClick={() => setWorkspacesOpen(!workspacesOpen)}>
+            <span>{workspacesOpen ? "▾" : "▸"} Recent Workspaces</span>
+            <span className="count">{workspaces.length}</span>
+          </button>
+          {workspacesOpen && (
+            <div className="workspaces-list">
+              {workspaces.length === 0 ? (
+                <div className="empty-state" style={{ padding: "12px 16px", fontSize: 13 }}>
+                  No saved workspaces yet. Start a conversation to create one.
+                </div>
+              ) : (
+                workspaces.map((ws) => (
+                  <div
+                    key={ws.id}
+                    className={`workspace-list-item ${activeWorkspaceId === ws.id ? "active" : ""}`}
+                    onClick={() => loadWorkspace(ws.id)}
+                  >
+                    <div className="ws-item-title">{ws.title}</div>
+                    <div className="ws-item-meta">
+                      <span>{ws.message_count} msgs</span>
+                      <span>{new Date(ws.updated_at).toLocaleDateString()}</span>
+                    </div>
+                  </div>
+                ))
+              )}
+            </div>
+          )}
+        </div>
       </div>
 
       {/* ─── RIGHT PANEL ────────────────────────────────────────── */}
@@ -563,9 +677,9 @@ function Studio({ user, logout }) {
             <span className="dot" />
             {getModelDisplayName(selectedSolver)}
           </div>
-          {(workspace.length > 0 || messages.length > 0) && (
-            <button className="btn-sm btn-clear-conv" onClick={clearConversation}>✕ Clear</button>
-          )}
+          <button className="btn-sm btn-new-workspace" onClick={newWorkspace} title="Start a new workspace">
+            ＋ New
+          </button>
         </div>
 
         <div className="solver-body" ref={solverBodyRef}>
