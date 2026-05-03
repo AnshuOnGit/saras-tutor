@@ -30,7 +30,6 @@ export default function App() {
 function Studio({ user, logout }) {
   // ── Models ─────────────────────────────────────────────────────
   const [categories, setCategories] = useState([]);
-  const [activeTab, setActiveTab] = useState("OCR");
   const [selectedOCR, setSelectedOCR] = useState("");
   const [selectedSolver, setSelectedSolver] = useState("");
 
@@ -68,6 +67,7 @@ function Studio({ user, logout }) {
   const [wsLimit, setWsLimit] = useState(5);
   const [loadingWorkspace, setLoadingWorkspace] = useState(false);
   const [activeWorkspaceId, setActiveWorkspaceId] = useState(null);
+  const [solverModelsOpen, setSolverModelsOpen] = useState(false);
 
   // ── Mobile panel toggle ────────────────────────────────────────
   const [mobilePanel, setMobilePanel] = useState("extract"); // "extract" | "workspace"
@@ -488,9 +488,8 @@ function Studio({ user, logout }) {
   };
 
   // ── Helpers ───────────────────────────────────────────────────
-  const currentCategory = categories.find((c) => c.category === activeTab);
-  const selectedModelId = activeTab === "OCR" ? selectedOCR : selectedSolver;
-  const setSelectedModel = activeTab === "OCR" ? setSelectedOCR : setSelectedSolver;
+  const ocrCategory = categories.find((c) => c.category === "OCR");
+  const solverCategory = categories.find((c) => c.category === "Solver");
 
   const getModelDisplayName = (id) => {
     for (const cat of categories) {
@@ -535,24 +534,16 @@ function Studio({ user, logout }) {
           </div>
         </div>
 
-        {/* Model selector */}
+        {/* OCR Model selector */}
         <div className="model-section">
-          <div className="model-section-title">Model Selection</div>
-          <div className="model-tabs">
-            <button className={`model-tab ${activeTab === "OCR" ? "active-ocr" : ""}`} onClick={() => setActiveTab("OCR")}>
-              🔍 OCR <span className="count">{categories.find((c) => c.category === "OCR")?.total_models || 0}</span>
-            </button>
-            <button className={`model-tab ${activeTab === "Solver" ? "active-solver" : ""}`} onClick={() => setActiveTab("Solver")}>
-              🧠 Solver <span className="count">{categories.find((c) => c.category === "Solver")?.total_models || 0}</span>
-            </button>
-          </div>
+          <div className="model-section-title">🔍 OCR Model</div>
           <div className="models-scroll">
-            {currentCategory?.providers?.map((prov) => (
+            {ocrCategory?.providers?.map((prov) => (
               <div key={prov.provider} className="provider-group">
                 <div className="provider-name">{prov.provider}</div>
                 <div className="model-list">
                   {prov.models.map((m) => (
-                    <div key={m.id} className={`model-item ${selectedModelId === m.id ? "selected" : ""} ${activeTab === "OCR" ? "ocr-item" : ""}`} onClick={() => setSelectedModel(m.id)}>
+                    <div key={m.id} className={`model-item ocr-item ${selectedOCR === m.id ? "selected" : ""}`} onClick={() => setSelectedOCR(m.id)}>
                       <div className="radio" />
                       <div className="model-info">
                         <div className="model-name">{m.display_name}</div>
@@ -649,24 +640,45 @@ function Studio({ user, logout }) {
         <div className="solver-header">
           <span style={{ fontSize: 20 }}>🧠</span>
           <h2>Workspace</h2>
-          <div className="solver-model-picker-inline">
-            <select
-              className="solver-model-select"
-              value={selectedSolver}
-              onChange={(e) => setSelectedSolver(e.target.value)}
-            >
-              {categories
-                .filter((c) => c.category === "Solver")
-                .flatMap((c) => c.providers || [])
-                .flatMap((p) => p.models || [])
-                .map((m) => (
-                  <option key={m.id} value={m.id}>{m.display_name}</option>
-                ))}
-            </select>
-          </div>
           <button className="btn-sm btn-new-workspace" onClick={newWorkspace} title="Start a new workspace">
             ＋ New
           </button>
+        </div>
+
+        {/* Solver model picker — collapsible */}
+        <div className="solver-picker-section">
+          <button className="solver-picker-toggle" onClick={() => setSolverModelsOpen(!solverModelsOpen)}>
+            <span className="solver-picker-current">
+              <span className="dot" />
+              {getModelDisplayName(selectedSolver)}
+            </span>
+            <span className="solver-picker-arrow">{solverModelsOpen ? "▴" : "▾"}</span>
+          </button>
+          {solverModelsOpen && (
+            <div className="solver-picker-list">
+              {solverCategory?.providers?.map((prov) => (
+                <div key={prov.provider} className="provider-group">
+                  <div className="provider-name">{prov.provider}</div>
+                  <div className="model-list">
+                    {prov.models.map((m) => (
+                      <div
+                        key={m.id}
+                        className={`model-item ${selectedSolver === m.id ? "selected" : ""}`}
+                        onClick={() => { setSelectedSolver(m.id); setSolverModelsOpen(false); }}
+                      >
+                        <div className="radio" />
+                        <div className="model-info">
+                          <div className="model-name">{m.display_name}</div>
+                          {m.notes && <div className="model-notes">{m.notes}</div>}
+                        </div>
+                        {m.priority === 1 && <span className="model-default-badge">DEFAULT</span>}
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              ))}
+            </div>
+          )}
         </div>
 
         <div className="solver-body" ref={solverBodyRef}>
