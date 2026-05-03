@@ -255,12 +255,20 @@ function Studio({ user, logout }) {
         userContent = `${intentLabels[intent] || intent}${slotDescs.length ? "\n\n" + slotDescs.join("\n") : ""}`;
       }
 
+      let solverLabel = selectedSolver;
+      for (const cat of categories) {
+        for (const prov of cat.providers || []) {
+          for (const m of prov.models || []) {
+            if (m.id === selectedSolver) { solverLabel = m.display_name; break; }
+          }
+        }
+      }
       const userMsg = { id: crypto.randomUUID(), role: "user", content: userContent };
       const assistantId = crypto.randomUUID();
       setMessages((prev) => [
         ...prev,
         userMsg,
-        { id: assistantId, role: "assistant", content: "" },
+        { id: assistantId, role: "assistant", content: "", model: solverLabel },
       ]);
 
       const history = messages
@@ -329,7 +337,9 @@ function Studio({ user, logout }) {
                   prev.map((m) => (m.id === assistantId ? { ...m, content: fullText } : m))
                 );
               } else if (ev.type === "warning") {
-                // Model is still thinking — show inline warning but keep streaming
+                // Model is still thinking — unlock buttons so user can try another model
+                streamingRef.current = false;
+                setStreaming(false);
                 setMessages((prev) =>
                   prev.map((m) =>
                     m.id === assistantId
@@ -338,7 +348,9 @@ function Studio({ user, logout }) {
                   )
                 );
               } else if (ev.type === "error") {
-                // Model timed out
+                // Model timed out — unlock and show error
+                streamingRef.current = false;
+                setStreaming(false);
                 setMessages((prev) =>
                   prev.map((m) =>
                     m.id === assistantId
@@ -361,7 +373,7 @@ function Studio({ user, logout }) {
         setStreaming(false);
       }
     },
-    [selectedSolver, workspace, messages, conversationId]
+    [selectedSolver, workspace, messages, conversationId, categories]
   );
 
   const handleFollowUp = (e) => {
@@ -621,6 +633,9 @@ function Studio({ user, logout }) {
                 <div key={msg.id} className={`chat-msg chat-msg-${msg.role}`}>
                   <div className="chat-msg-avatar">{msg.role === "user" ? "👤" : "🤖"}</div>
                   <div className={`chat-msg-body ${msg.role === "assistant" && msg.content === "" ? "streaming-cursor" : ""}`}>
+                    {msg.role === "assistant" && msg.model && (
+                      <div className="chat-model-badge">🧠 {msg.model}</div>
+                    )}
                     <Markdown>{msg.content || "Thinking…"}</Markdown>
                   </div>
                 </div>
