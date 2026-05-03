@@ -247,6 +247,10 @@ function Studio({ user, logout }) {
       setExtractions((prev) => [extraction, ...prev]);
       clearImage();
 
+      // Auto-add to workspace
+      addToWorkspace(extraction);
+      setMobilePanel("workspace");
+
       // Poll for LaTeX verification (background, non-blocking)
       if (!extraction.latex_verified) {
         setTimeout(() => {
