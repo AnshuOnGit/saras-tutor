@@ -533,6 +533,52 @@ body,
 .workspace-list-item:hover .ws-item-delete { opacity: 0.5; }
 .ws-item-delete:hover { opacity: 1 !important; background: rgba(239, 68, 68, 0.1); }
 
+.workspaces-section--main {
+  flex: 1;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+}
+
+.workspaces-heading {
+  font-size: 11px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  color: var(--text-secondary);
+  padding: 12px 20px 8px;
+}
+.workspaces-heading .count {
+  background: var(--surface-2);
+  padding: 1px 7px;
+  border-radius: 10px;
+  font-size: 10px;
+}
+
+.workspaces-section--main .workspaces-list {
+  flex: 1;
+  overflow-y: auto;
+  padding: 0 12px 12px;
+  max-height: none;
+}
+
+.btn-load-more {
+  display: block;
+  width: 100%;
+  padding: 8px;
+  text-align: center;
+  color: var(--primary);
+  background: none;
+  border: 1px dashed var(--border);
+  border-radius: 6px;
+  cursor: pointer;
+  font-size: 12px;
+  margin-top: 4px;
+}
+.btn-load-more:hover {
+  background: var(--surface-2);
+}
+
 .btn-new-workspace {
   background: var(--primary) !important;
   color: white !important;

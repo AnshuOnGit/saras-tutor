@@ -64,7 +64,8 @@ function Studio({ user, logout }) {
 
   // ── Workspaces (persistence) ───────────────────────────────────
   const [workspaces, setWorkspaces] = useState([]);
-  const [workspacesOpen, setWorkspacesOpen] = useState(false);
+  const [wsHasMore, setWsHasMore] = useState(false);
+  const [wsLimit, setWsLimit] = useState(5);
   const [loadingWorkspace, setLoadingWorkspace] = useState(false);
   const [activeWorkspaceId, setActiveWorkspaceId] = useState(null);
 
@@ -95,11 +96,14 @@ function Studio({ user, logout }) {
 
   // ── Load workspaces on mount ──────────────────────────────────
   const refreshWorkspaces = useCallback(() => {
-    fetch(`${API_BASE}/api/workspaces?limit=20`, { credentials: "include" })
+    fetch(`${API_BASE}/api/workspaces?limit=${wsLimit}`, { credentials: "include" })
       .then((r) => r.json())
-      .then((data) => setWorkspaces(data.workspaces || []))
+      .then((data) => {
+        setWorkspaces(data.workspaces || []);
+        setWsHasMore(data.has_more || false);
+      })
       .catch(console.error);
-  }, []);
+  }, [wsLimit]);
 
   useEffect(() => { refreshWorkspaces(); }, [refreshWorkspaces]);
 
@@ -598,58 +602,21 @@ function Studio({ user, logout }) {
           </button>
         </div>
 
-        {/* Extractions list */}
-        <div className="extractions-section">
-          <div className="extractions-title">
-            Extractions <span className="count">{extractions.length}</span>
-          </div>
-
-          {extractions.length === 0 ? (
-            <div className="empty-state">
-              <div className="icon">📋</div>
-              <div className="title">No extractions yet</div>
-              <div className="desc">Upload an image above and extract text using any OCR model</div>
-            </div>
-          ) : (
-            extractions.map((ext) => {
-              const inWs = workspace.some((s) => s.extraction.id === ext.id);
-              return (
-                <div key={ext.id} className={`extraction-card ${inWs ? "in-workspace" : ""}`} draggable onDragStart={(e) => handleDragStart(e, ext)}>
-                  <div className="card-header">
-                    <span className="card-model">{getModelDisplayName(ext.model_id)}</span>
-                    {ext.latex_verified && <span className="latex-verified-badge">✓ LaTeX</span>}
-                    <span className="card-time">{new Date(ext.created_at).toLocaleTimeString()}</span>
-                    <button className="btn-expand" onClick={(e) => { e.stopPropagation(); setExpandedExtraction(ext); }} title="Expand">⛶</button>
-                  </div>
-                  <div className="card-text"><Markdown>{ext.extracted_text}</Markdown></div>
-                  <div className="card-actions">
-                    {!inWs ? (
-                      <button className="btn-sm btn-add-workspace" onClick={() => { addToWorkspace(ext); setMobilePanel("workspace"); }}>＋ Add to workspace</button>
-                    ) : (
-                      <button className="btn-sm in-workspace-badge" onClick={() => setMobilePanel("workspace")}>✓ In workspace</button>
-                    )}
-                    <button className="btn-sm" title="Drag to workspace">⇥ Drag</button>
-                  </div>
-                </div>
-              );
-            })
-          )}
-        </div>
-
         {/* Recent Workspaces */}
-        <div className="workspaces-section">
-          <button className="workspaces-toggle" onClick={() => setWorkspacesOpen(!workspacesOpen)}>
-            <span>{workspacesOpen ? "▾" : "▸"} Recent Workspaces</span>
-            <span className="count">{workspaces.length}</span>
-          </button>
-          {workspacesOpen && (
-            <div className="workspaces-list">
-              {workspaces.length === 0 ? (
-                <div className="empty-state" style={{ padding: "12px 16px", fontSize: 13 }}>
-                  No saved workspaces yet. Start a conversation to create one.
-                </div>
-              ) : (
-                workspaces.map((ws) => (
+        <div className="workspaces-section workspaces-section--main">
+          <div className="workspaces-heading">
+            📂 Recent Workspaces <span className="count">{workspaces.length}</span>
+          </div>
+          <div className="workspaces-list">
+            {workspaces.length === 0 ? (
+              <div className="empty-state" style={{ padding: "16px 20px", fontSize: 13 }}>
+                <div className="icon">📂</div>
+                <div className="title">No workspaces yet</div>
+                <div className="desc">Upload an image, extract text, and start solving to create your first workspace.</div>
+              </div>
+            ) : (
+              <>
+                {workspaces.map((ws) => (
                   <div
                     key={ws.id}
                     className={`workspace-list-item ${activeWorkspaceId === ws.id ? "active" : ""}`}
@@ -661,10 +628,15 @@ function Studio({ user, logout }) {
                       <span>{new Date(ws.updated_at).toLocaleDateString()}</span>
                     </div>
                   </div>
-                ))
-              )}
-            </div>
-          )}
+                ))}
+                {wsHasMore && (
+                  <button className="btn-sm btn-load-more" onClick={() => setWsLimit((l) => l + 5)}>
+                    Load more…
+                  </button>
+                )}
+              </>
+            )}
+          </div>
         </div>
       </div>
 
