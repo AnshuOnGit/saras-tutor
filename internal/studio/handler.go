@@ -359,14 +359,44 @@ func (h *Handler) Chat(c *gin.Context) {
 
 	ctx := c.Request.Context()
 
-	// Validate follow-up message if present
-	gkCfgMsg := gatekeeperConfig{
-		apiKey:  h.cfg.LLM.APIKey,
-		baseURL: h.cfg.LLM.BaseURL,
-		userID:  h.cfg.LLM.UserID,
-	}
-	if req.Message != "" {
-		safety := ValidateContent(ctx, gkCfgMsg, req.Message)
+	// Validate follow-up message: check relevance to conversation, not PCMB subject filter
+	if req.Intent == "followup" && req.Message != "" {
+		// Build context from slots for relevance check
+		var slotContext string
+		for _, s := range req.Slots {
+			text := strings.TrimSpace(s.Text)
+			if text != "" {
+				slotContext += s.Role + ": " + text + "\n"
+			}
+		}
+		// Include recent history for context
+		for _, h := range req.History {
+			if len(slotContext) > 2000 {
+				break
+			}
+			slotContext += h.Role + ": " + h.Content + "\n"
+		}
+		gkCfg := gatekeeperConfig{
+			apiKey:  h.cfg.LLM.APIKey,
+			baseURL: h.cfg.LLM.BaseURL,
+			userID:  h.cfg.LLM.UserID,
+		}
+		relevance := ValidateFollowUpRelevance(ctx, gkCfg, slotContext, req.Message)
+		if !relevance.Safe {
+			c.JSON(http.StatusBadRequest, gin.H{
+				"error":  "Your follow-up doesn't seem related to the current question. Please ask something about the problem you're working on.",
+				"reason": relevance.Reason,
+			})
+			return
+		}
+	} else if req.Message != "" {
+		// Non-followup messages with text still get PCMB check
+		gkCfg := gatekeeperConfig{
+			apiKey:  h.cfg.LLM.APIKey,
+			baseURL: h.cfg.LLM.BaseURL,
+			userID:  h.cfg.LLM.UserID,
+		}
+		safety := ValidateContent(ctx, gkCfg, req.Message)
 		if !safety.Safe {
 			c.JSON(http.StatusBadRequest, gin.H{
 				"error":  "Your message contains unsupported content. Saras only handles Physics, Chemistry, Math, and Biology questions.",
