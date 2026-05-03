@@ -164,6 +164,18 @@ function Studio({ user, logout }) {
       const extraction = await res.json();
       setExtractions((prev) => [extraction, ...prev]);
       clearImage();
+
+      // Poll for LaTeX verification (background, non-blocking)
+      if (!extraction.latex_verified) {
+        setTimeout(() => {
+          fetch(`${API_BASE}/api/extractions?session_id=${SESSION_ID}`, { credentials: "include" })
+            .then((r) => r.json())
+            .then((data) => {
+              if (data.extractions) setExtractions(data.extractions);
+            })
+            .catch(() => {});
+        }, 30000);
+      }
     } catch (e) {
       alert("Extraction error: " + e.message);
     } finally {
@@ -522,6 +534,7 @@ function Studio({ user, logout }) {
                 <div key={ext.id} className={`extraction-card ${inWs ? "in-workspace" : ""}`} draggable onDragStart={(e) => handleDragStart(e, ext)}>
                   <div className="card-header">
                     <span className="card-model">{getModelDisplayName(ext.model_id)}</span>
+                    {ext.latex_verified && <span className="latex-verified-badge">✓ LaTeX</span>}
                     <span className="card-time">{new Date(ext.created_at).toLocaleTimeString()}</span>
                     <button className="btn-expand" onClick={(e) => { e.stopPropagation(); setExpandedExtraction(ext); }} title="Expand">⛶</button>
                   </div>
@@ -634,7 +647,10 @@ function Studio({ user, logout }) {
                   <div className="chat-msg-avatar">{msg.role === "user" ? "👤" : "🤖"}</div>
                   <div className={`chat-msg-body ${msg.role === "assistant" && msg.content === "" ? "streaming-cursor" : ""}`}>
                     {msg.role === "assistant" && msg.model && (
-                      <div className="chat-model-badge">🧠 {msg.model}</div>
+                      <div className="chat-model-badge">
+                        🧠 {msg.model}
+                        {msg.latexVerified && <span className="latex-verified-badge">✓ LaTeX Verified</span>}
+                      </div>
                     )}
                     <Markdown>{msg.content || "Thinking…"}</Markdown>
                   </div>

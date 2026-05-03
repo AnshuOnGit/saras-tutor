@@ -254,7 +254,7 @@ func (h *Handler) Extract(c *gin.Context) {
 		return
 	}
 
-	// Persist
+	// Persist immediately so user sees the result without waiting for verification
 	extraction := &Extraction{
 		ID:            uuid.New().String(),
 		SessionID:     sessionID,
@@ -262,6 +262,7 @@ func (h *Handler) Extract(c *gin.Context) {
 		ImageURL:      imageURL,
 		ExtractedText: extractedText,
 		ModelID:       modelID,
+		LatexVerified: false,
 		CreatedAt:     time.Now().UTC(),
 	}
 	if err := h.saveExtraction(ctx, extraction); err != nil {
@@ -271,6 +272,28 @@ func (h *Handler) Extract(c *gin.Context) {
 	}
 
 	c.JSON(http.StatusOK, extraction)
+
+	// Background: LLM LaTeX verification — update DB when done
+	go func(extID, text string) {
+		vCtx, vCancel := context.WithTimeout(context.Background(), 45*time.Second)
+		defer vCancel()
+		lfCfg := latexFixerConfig{
+			apiKey:  h.cfg.LLM.APIKey,
+			baseURL: h.cfg.LLM.BaseURL,
+			userID:  h.cfg.LLM.UserID,
+		}
+		verified := llmFixLaTeX(vCtx, lfCfg, text)
+		uCtx, uCancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer uCancel()
+		_, err := h.pool.Exec(uCtx,
+			`UPDATE extractions SET extracted_text = $1, latex_verified = true WHERE id = $2`,
+			verified, extID)
+		if err != nil {
+			logger.Error().Err(err).Str("extraction_id", extID).Msg("latex verification DB update failed")
+		} else {
+			logger.Info().Str("extraction_id", extID).Msg("latex verification complete")
+		}
+	}(extraction.ID, extractedText)
 }
 
 // ─── GET /api/extractions ─────────────────────────────────────────────
@@ -284,7 +307,7 @@ func (h *Handler) ListExtractions(c *gin.Context) {
 	}
 	userID := uid.String()
 	rows, err := h.pool.Query(c.Request.Context(),
-		`SELECT id, session_id, user_id, image_url, extracted_text, model_id, created_at
+		`SELECT id, session_id, user_id, image_url, extracted_text, model_id, COALESCE(latex_verified, false), created_at
 		 FROM extractions WHERE user_id = $1 ORDER BY created_at DESC LIMIT 10`, userID)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "query failed"})
@@ -295,7 +318,7 @@ func (h *Handler) ListExtractions(c *gin.Context) {
 	var list []Extraction
 	for rows.Next() {
 		var e Extraction
-		if err := rows.Scan(&e.ID, &e.SessionID, &e.UserID, &e.ImageURL, &e.ExtractedText, &e.ModelID, &e.CreatedAt); err != nil {
+		if err := rows.Scan(&e.ID, &e.SessionID, &e.UserID, &e.ImageURL, &e.ExtractedText, &e.ModelID, &e.LatexVerified, &e.CreatedAt); err != nil {
 			continue
 		}
 		list = append(list, e)
@@ -751,8 +774,7 @@ RULES:
 	fmt.Fprintf(c.Writer, "data: [DONE]\n\n")
 	flusher.Flush()
 
-	// ── Phase C: Post-stream — save assistant response ──
-	// Use a detached context so the save isn't canceled when the client disconnects.
+	// ── Phase C: Post-stream — save assistant response immediately ──
 	saveCtx, saveCancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer saveCancel()
 
@@ -760,10 +782,38 @@ RULES:
 	if assistantIntent == "" {
 		assistantIntent = "solve"
 	}
+	msgID := uuid.New().String()
 	meta := map[string]string{"model_id": modelID, "session_id": req.SessionID}
-	if err := h.saveMessage(saveCtx, req.ConversationID, req.UserID, "assistant", assistantIntent, correctedResponse, nil, nil, meta); err != nil {
-		logger.Error().Err(err).Msg("save assistant message")
+	metaJSON, _ := json.Marshal(meta)
+	_, saveErr := h.pool.Exec(saveCtx,
+		`INSERT INTO studio_messages (id, conversation_id, user_id, role, intent, content, question_extraction_id, attempt_extraction_id, meta, created_at)
+		 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)`,
+		msgID, req.ConversationID, req.UserID, "assistant", assistantIntent, correctedResponse, nil, nil, metaJSON, time.Now())
+	if saveErr != nil {
+		logger.Error().Err(saveErr).Msg("save assistant message")
 	}
+
+	// Background: LLM LaTeX verification — update DB when done
+	go func(savedMsgID, text string) {
+		vCtx, vCancel := context.WithTimeout(context.Background(), 45*time.Second)
+		defer vCancel()
+		lfCfg := latexFixerConfig{
+			apiKey:  h.cfg.LLM.APIKey,
+			baseURL: h.cfg.LLM.BaseURL,
+			userID:  h.cfg.LLM.UserID,
+		}
+		verified := llmFixLaTeX(vCtx, lfCfg, text)
+		uCtx, uCancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer uCancel()
+		_, err := h.pool.Exec(uCtx,
+			`UPDATE studio_messages SET content = $1, meta = meta || '{"latex_verified":"true"}'::jsonb WHERE id = $2`,
+			verified, savedMsgID)
+		if err != nil {
+			logger.Error().Err(err).Str("msg_id", savedMsgID).Msg("latex verification DB update failed")
+		} else {
+			logger.Info().Str("msg_id", savedMsgID).Msg("solver latex verification complete")
+		}
+	}(msgID, correctedResponse)
 }
 
 // ─── Extraction model + persistence ───────────────────────────────────
@@ -776,14 +826,15 @@ type Extraction struct {
 	ImageURL      string    `json:"image_url"`
 	ExtractedText string    `json:"extracted_text"`
 	ModelID       string    `json:"model_id"`
+	LatexVerified bool      `json:"latex_verified"`
 	CreatedAt     time.Time `json:"created_at"`
 }
 
 func (h *Handler) saveExtraction(ctx context.Context, e *Extraction) error {
 	_, err := h.pool.Exec(ctx,
-		`INSERT INTO extractions (id, session_id, user_id, image_url, extracted_text, model_id, created_at)
-		 VALUES ($1, $2, $3, $4, $5, $6, $7)`,
-		e.ID, e.SessionID, e.UserID, e.ImageURL, e.ExtractedText, e.ModelID, e.CreatedAt)
+		`INSERT INTO extractions (id, session_id, user_id, image_url, extracted_text, model_id, latex_verified, created_at)
+		 VALUES ($1, $2, $3, $4, $5, $6, $7, $8)`,
+		e.ID, e.SessionID, e.UserID, e.ImageURL, e.ExtractedText, e.ModelID, e.LatexVerified, e.CreatedAt)
 	return err
 }
 

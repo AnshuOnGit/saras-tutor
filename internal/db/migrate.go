@@ -147,6 +147,12 @@ ALTER TABLE studio_messages ADD COLUMN IF NOT EXISTS auth_user_id UUID REFERENCE
 CREATE INDEX IF NOT EXISTS idx_studio_messages_auth_user ON studio_messages(auth_user_id, created_at DESC);
 `,
 		},
+		{
+			name: "008_add_latex_verified",
+			sql: `
+ALTER TABLE extractions ADD COLUMN IF NOT EXISTS latex_verified BOOLEAN NOT NULL DEFAULT false;
+`,
+		},
 	}
 }
 
