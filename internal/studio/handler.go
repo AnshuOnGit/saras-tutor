@@ -439,7 +439,7 @@ func (h *Handler) GetWorkspace(c *gin.Context) {
 	}
 
 	msgRows, err := h.pool.Query(ctx, `
-		SELECT id, conversation_id, role, content, model_id,
+		SELECT id, conversation_id, role, content, meta->>'model_id',
 		       attempt_extraction_id, question_extraction_id, created_at
 		FROM studio_messages
 		WHERE conversation_id = $1
@@ -467,7 +467,7 @@ func (h *Handler) GetWorkspace(c *gin.Context) {
 
 	// 3. Fetch extractions referenced by this workspace's messages
 	extRows, err := h.pool.Query(ctx, `
-		SELECT DISTINCT e.id, e.original_text, e.latex_verified, e.created_at
+		SELECT DISTINCT e.id, e.extracted_text, e.latex_verified, e.created_at
 		FROM extractions e
 		WHERE e.id IN (
 			SELECT question_extraction_id FROM studio_messages WHERE conversation_id = $1 AND question_extraction_id IS NOT NULL
