@@ -428,14 +428,14 @@ func (h *Handler) GetWorkspace(c *gin.Context) {
 
 	// 2. Fetch all messages in order
 	type wsMessage struct {
-		ID                    string  `json:"id"`
-		ConversationID        string  `json:"conversation_id"`
-		Role                  string  `json:"role"`
-		Content               string  `json:"content"`
-		ModelID               *string `json:"model_id,omitempty"`
-		AttemptExtractionID   *string `json:"attempt_extraction_id,omitempty"`
-		QuestionExtractionID  *string `json:"question_extraction_id,omitempty"`
-		CreatedAt             string  `json:"created_at"`
+		ID                    string    `json:"id"`
+		ConversationID        string    `json:"conversation_id"`
+		Role                  string    `json:"role"`
+		Content               string    `json:"content"`
+		ModelID               *string   `json:"model_id,omitempty"`
+		AttemptExtractionID   *string   `json:"attempt_extraction_id,omitempty"`
+		QuestionExtractionID  *string   `json:"question_extraction_id,omitempty"`
+		CreatedAt             time.Time `json:"created_at"`
 	}
 
 	msgRows, err := h.pool.Query(ctx, `
@@ -483,10 +483,10 @@ func (h *Handler) GetWorkspace(c *gin.Context) {
 	defer extRows.Close()
 
 	type wsExtraction struct {
-		ID            string `json:"id"`
-		OriginalText  string `json:"original_text"`
-		LatexVerified bool   `json:"latex_verified"`
-		CreatedAt     string `json:"created_at"`
+		ID            string    `json:"id"`
+		OriginalText  string    `json:"original_text"`
+		LatexVerified bool      `json:"latex_verified"`
+		CreatedAt     time.Time `json:"created_at"`
 	}
 	var extractions []wsExtraction
 	for extRows.Next() {
@@ -934,10 +934,11 @@ RULES:
 		case <-firstByteTimer.C:
 			if !gotFirstToken && !warningSent {
 				warningSent = true
-				// Send a warning event — the model is still thinking
+				// Build dynamic suggestion from other solver models
+				altModels := suggestAlternativeModels(modelID, 2)
 				warnMsg := map[string]string{
 					"type":    "warning",
-					"text":    "⏳ **" + modelID + "** is still thinking — reasoning models can take a while on complex problems. You can open another chat tab and try a different solver (e.g. DeepSeek V4 Pro or Qwen3-Next 80B) while this one continues. This connection will stay alive for 5 more minutes.",
+					"text":    "⏳ **" + modelID + "** is still thinking — reasoning models can take a while on complex problems. Try switching to " + altModels + " using the model picker above. This connection will stay alive for 5 more minutes.",
 					"modelId": modelID,
 				}
 				warnData, _ := json.Marshal(warnMsg)
@@ -948,9 +949,10 @@ RULES:
 
 		case <-extendedTimer.C:
 			// Final timeout — give up
+			altModels := suggestAlternativeModels(modelID, 3)
 			timeoutMsg := map[string]string{
 				"type":    "error",
-				"text":    "⏱️ **" + modelID + "** did not respond within 7 minutes. Please try a different solver model — DeepSeek V4 Pro and Qwen3-Next 80B are usually faster.",
+				"text":    "⏱️ **" + modelID + "** did not respond within 7 minutes. Please try " + altModels + ".",
 				"modelId": modelID,
 			}
 			timeoutData, _ := json.Marshal(timeoutMsg)
@@ -1050,4 +1052,32 @@ func (h *Handler) saveMessage(ctx context.Context, conversationID, userID, role,
 		 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)`,
 		uuid.New().String(), conversationID, userID, role, intent, content, qExtID, aExtID, metaJSON, time.Now())
 	return err
+}
+
+// suggestAlternativeModels returns a formatted string of top-N solver models
+// (by priority) excluding the current model, e.g. "**DeepSeek V4 Pro** or **Kimi K2 Thinking**".
+func suggestAlternativeModels(currentModelID string, n int) string {
+	solverCats := []config.ModelCategory{
+		config.CategorySolverLevel1,
+		config.CategorySolverLevel2,
+		config.CategorySolverLevel3,
+	}
+	seen := make(map[string]bool)
+	seen[currentModelID] = true
+	var names []string
+	for _, cat := range solverCats {
+		for _, m := range config.GetModelsByCategory(cat) {
+			if !seen[m.ID] && len(names) < n {
+				seen[m.ID] = true
+				names = append(names, "**"+m.DisplayName+"**")
+			}
+		}
+	}
+	if len(names) == 0 {
+		return "a different solver model"
+	}
+	if len(names) == 1 {
+		return names[0]
+	}
+	return strings.Join(names[:len(names)-1], ", ") + " or " + names[len(names)-1]
 }
