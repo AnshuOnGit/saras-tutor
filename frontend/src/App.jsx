@@ -673,9 +673,20 @@ function Studio({ user, logout }) {
         <div className="solver-header">
           <span style={{ fontSize: 20 }}>🧠</span>
           <h2>Workspace</h2>
-          <div className="solver-model-indicator">
-            <span className="dot" />
-            {getModelDisplayName(selectedSolver)}
+          <div className="solver-model-picker-inline">
+            <select
+              className="solver-model-select"
+              value={selectedSolver}
+              onChange={(e) => setSelectedSolver(e.target.value)}
+            >
+              {categories
+                .filter((c) => c.category === "Solver")
+                .flatMap((c) => c.providers || [])
+                .flatMap((p) => p.models || [])
+                .map((m) => (
+                  <option key={m.id} value={m.id}>{m.display_name}</option>
+                ))}
+            </select>
           </div>
           <button className="btn-sm btn-new-workspace" onClick={newWorkspace} title="Start a new workspace">
             ＋ New

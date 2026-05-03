@@ -754,6 +754,28 @@ body,
   background: var(--accent-solver);
 }
 
+.solver-model-picker-inline {
+  margin-left: auto;
+  flex-shrink: 1;
+  min-width: 0;
+}
+
+.solver-model-select {
+  font-size: 12px;
+  padding: 4px 8px;
+  border-radius: 6px;
+  border: 1px solid var(--border);
+  background: var(--surface-2);
+  color: var(--text-primary);
+  max-width: 180px;
+  cursor: pointer;
+  text-overflow: ellipsis;
+}
+.solver-model-select:focus {
+  outline: none;
+  border-color: var(--primary);
+}
+
 .solver-body {
   flex: 1;
   overflow-y: auto;

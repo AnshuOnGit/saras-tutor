@@ -109,18 +109,18 @@ var ModelRegistry = []ModelExpert{
 	// ──────────────────────────────────────────────────────────────────
 	// NOTE: mistral-small-3.1-24b-instruct-2503 removed — EOL 2026-04-15.
 	{
-		ID:          "moonshotai/kimi-k2-thinking",
-		DisplayName: "Kimi K2 Thinking",
-		Category:    CategorySolverLevel1,
-		Priority:    1,
-		Notes:       "Moonshot reasoning model. Default.",
-	},
-	{
 		ID:          "deepseek-ai/deepseek-v4-pro",
 		DisplayName: "DeepSeek V4 Pro",
 		Category:    CategorySolverLevel1,
+		Priority:    1,
+		Notes:       "Frontier-class DeepSeek reasoning. Default.",
+	},
+	{
+		ID:          "moonshotai/kimi-k2-thinking",
+		DisplayName: "Kimi K2 Thinking",
+		Category:    CategorySolverLevel1,
 		Priority:    2,
-		Notes:       "Frontier-class DeepSeek reasoning.",
+		Notes:       "Moonshot reasoning model.",
 	},
 	{
 		ID:          "google/gemma-3-27b-it",
@@ -157,18 +157,18 @@ var ModelRegistry = []ModelExpert{
 	// NOTE: deepseek-r1-distill-qwen-32b/14b, mathstral-7b-v0.1 and qwen/qwq-32b
 	// removed — all EOL 2026-04-15.
 	{
-		ID:          "moonshotai/kimi-k2-thinking",
-		DisplayName: "Kimi K2 Thinking",
-		Category:    CategorySolverLevel2,
-		Priority:    1,
-		Notes:       "Moonshot reasoning model. Default.",
-	},
-	{
 		ID:          "deepseek-ai/deepseek-v4-pro",
 		DisplayName: "DeepSeek V4 Pro",
 		Category:    CategorySolverLevel2,
+		Priority:    1,
+		Notes:       "Frontier-class DeepSeek reasoning. Default.",
+	},
+	{
+		ID:          "moonshotai/kimi-k2-thinking",
+		DisplayName: "Kimi K2 Thinking",
+		Category:    CategorySolverLevel2,
 		Priority:    2,
-		Notes:       "Frontier-class DeepSeek reasoning.",
+		Notes:       "Moonshot reasoning model.",
 	},
 	{
 		ID:          "qwen/qwen3-next-80b-a3b-thinking",
@@ -196,18 +196,18 @@ var ModelRegistry = []ModelExpert{
 	// Solver:Level3 — olympiad / multi-step proofs (extreme)
 	// ──────────────────────────────────────────────────────────────────
 	{
-		ID:          "moonshotai/kimi-k2-thinking",
-		DisplayName: "Kimi K2 Thinking",
-		Category:    CategorySolverLevel3,
-		Priority:    1,
-		Notes:       "Moonshot reasoning model. Default.",
-	},
-	{
 		ID:          "deepseek-ai/deepseek-v4-pro",
 		DisplayName: "DeepSeek V4 Pro",
 		Category:    CategorySolverLevel3,
+		Priority:    1,
+		Notes:       "Frontier-class DeepSeek reasoning. Default.",
+	},
+	{
+		ID:          "moonshotai/kimi-k2-thinking",
+		DisplayName: "Kimi K2 Thinking",
+		Category:    CategorySolverLevel3,
 		Priority:    2,
-		Notes:       "Frontier-class DeepSeek reasoning.",
+		Notes:       "Moonshot reasoning model.",
 	},
 	{
 		ID:          "meta/llama-3.1-405b-instruct",
