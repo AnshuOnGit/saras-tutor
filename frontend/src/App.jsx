@@ -509,7 +509,19 @@ function Studio({ user, logout }) {
   // ─────────────────────────────────────────────────────────────
   return (
     <div className="studio-layout">
-      {/* ─── MOBILE NAV ─────────────────────────────────────────── */}
+      {/* ─── MOBILE HEADER + NAV ────────────────────────────────── */}
+      <div className="mobile-header">
+        <img src={logoSvg} alt="Saras" style={{ width: 22, height: 22 }} />
+        <span className="mobile-header-title">Saras Studio</span>
+        <div className="mobile-header-right">
+          {user.picture ? (
+            <img src={user.picture} alt={user.name} className="user-avatar" style={{ width: 24, height: 24 }} />
+          ) : (
+            <span className="user-avatar-placeholder" style={{ width: 24, height: 24, fontSize: 11 }}>{user.name?.[0] || "?"}</span>
+          )}
+          <button className="btn-sm btn-logout" onClick={logout} title="Sign out">↪</button>
+        </div>
+      </div>
       <div className="mobile-panel-nav">
         <button className={`mobile-panel-btn ${mobilePanel === "extract" ? "active" : ""}`} onClick={() => setMobilePanel("extract")}>
           📷 Extract
@@ -648,7 +660,8 @@ function Studio({ user, logout }) {
         {/* Solver model picker — collapsible */}
         <div className="solver-picker-section">
           {(() => {
-            const allModels = solverCategory?.providers?.flatMap((p) => p.models || []) || [];
+            const allModels = (solverCategory?.providers?.flatMap((p) => p.models || []) || [])
+              .sort((a, b) => (a.priority || 99) - (b.priority || 99));
             const topModels = allModels.slice(0, 3);
             const restModels = allModels.slice(3);
             return (

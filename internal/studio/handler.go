@@ -119,13 +119,11 @@ func (h *Handler) ListModels(c *gin.Context) {
 	// OCR = Vision category
 	ocrModels := config.GetModelsByCategory(config.CategoryVision)
 
-	// Solver = all solver levels + hint + router (user asked hint+verifier as solver)
+	// Solver = all solver levels (hint + router are internal, not user-selectable)
 	solverCats := []config.ModelCategory{
 		config.CategorySolverLevel1,
 		config.CategorySolverLevel2,
 		config.CategorySolverLevel3,
-		config.CategoryHintGenerator,
-		config.CategoryRouter,
 	}
 	var solverModels []config.ModelExpert
 	seen := make(map[string]bool)
@@ -428,14 +426,14 @@ func (h *Handler) GetWorkspace(c *gin.Context) {
 
 	// 2. Fetch all messages in order
 	type wsMessage struct {
-		ID                    string    `json:"id"`
-		ConversationID        string    `json:"conversation_id"`
-		Role                  string    `json:"role"`
-		Content               string    `json:"content"`
-		ModelID               *string   `json:"model_id,omitempty"`
-		AttemptExtractionID   *string   `json:"attempt_extraction_id,omitempty"`
-		QuestionExtractionID  *string   `json:"question_extraction_id,omitempty"`
-		CreatedAt             time.Time `json:"created_at"`
+		ID                   string    `json:"id"`
+		ConversationID       string    `json:"conversation_id"`
+		Role                 string    `json:"role"`
+		Content              string    `json:"content"`
+		ModelID              *string   `json:"model_id,omitempty"`
+		AttemptExtractionID  *string   `json:"attempt_extraction_id,omitempty"`
+		QuestionExtractionID *string   `json:"question_extraction_id,omitempty"`
+		CreatedAt            time.Time `json:"created_at"`
 	}
 
 	msgRows, err := h.pool.Query(ctx, `
@@ -512,7 +510,7 @@ func (h *Handler) GetWorkspace(c *gin.Context) {
 // ChatRequest is the JSON body for POST /api/chat.
 type ChatRequest struct {
 	SessionID      string     `json:"session_id" binding:"required"`
-	UserID         string     `json:"user_id"`  // ignored; overridden from JWT
+	UserID         string     `json:"user_id"` // ignored; overridden from JWT
 	ConversationID string     `json:"conversation_id" binding:"required"`
 	ModelID        string     `json:"model"`
 	Intent         string     `json:"intent"`  // solve | hint | evaluate | followup
@@ -915,7 +913,7 @@ RULES:
 	defer extendedTimer.Stop()
 	warningSent := false
 
-	streamLoop:
+streamLoop:
 	for {
 		select {
 		case token, ok := <-tokenCh:

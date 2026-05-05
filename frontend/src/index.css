@@ -1606,9 +1606,39 @@ body,
 
 /* ── Responsive ───────────────────────────────────────────────────── */
 
-/* Mobile panel nav — hidden on desktop */
+/* Mobile header + panel nav — hidden on desktop */
+.mobile-header {
+  display: none;
+}
 .mobile-panel-nav {
   display: none;
+}
+
+@media (max-width: 900px) {
+  .mobile-header {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 8px 16px;
+    background: var(--bg-panel);
+    border-bottom: 1px solid var(--border);
+    flex-shrink: 0;
+  }
+  .mobile-header-title {
+    font-size: 15px;
+    font-weight: 700;
+    color: var(--text-primary);
+  }
+  .mobile-header-right {
+    margin-left: auto;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+  }
+  /* Hide the panel-header on mobile since mobile-header replaces it */
+  .panel-header {
+    display: none;
+  }
 }
 
 @media (max-width: 900px) {
