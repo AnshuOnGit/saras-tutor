@@ -647,38 +647,55 @@ function Studio({ user, logout }) {
 
         {/* Solver model picker — collapsible */}
         <div className="solver-picker-section">
-          <button className="solver-picker-toggle" onClick={() => setSolverModelsOpen(!solverModelsOpen)}>
-            <span className="solver-picker-current">
-              <span className="dot" />
-              {getModelDisplayName(selectedSolver)}
-            </span>
-            <span className="solver-picker-arrow">{solverModelsOpen ? "▴" : "▾"}</span>
-          </button>
-          {solverModelsOpen && (
-            <div className="solver-picker-list">
-              {solverCategory?.providers?.map((prov) => (
-                <div key={prov.provider} className="provider-group">
-                  <div className="provider-name">{prov.provider}</div>
-                  <div className="model-list">
-                    {prov.models.map((m) => (
-                      <div
-                        key={m.id}
-                        className={`model-item ${selectedSolver === m.id ? "selected" : ""}`}
-                        onClick={() => { setSelectedSolver(m.id); setSolverModelsOpen(false); }}
-                      >
-                        <div className="radio" />
-                        <div className="model-info">
-                          <div className="model-name">{m.display_name}</div>
-                          {m.notes && <div className="model-notes">{m.notes}</div>}
-                        </div>
-                        {m.priority === 1 && <span className="model-default-badge">DEFAULT</span>}
+          {(() => {
+            const allModels = solverCategory?.providers?.flatMap((p) => p.models || []) || [];
+            const topModels = allModels.slice(0, 3);
+            const restModels = allModels.slice(3);
+            return (
+              <>
+                <div className="solver-picker-top">
+                  {topModels.map((m) => (
+                    <div
+                      key={m.id}
+                      className={`model-item ${selectedSolver === m.id ? "selected" : ""}`}
+                      onClick={() => setSelectedSolver(m.id)}
+                    >
+                      <div className="radio" />
+                      <div className="model-info">
+                        <div className="model-name">{m.display_name}</div>
+                        {m.notes && <div className="model-notes">{m.notes}</div>}
                       </div>
-                    ))}
-                  </div>
+                      {m.priority === 1 && <span className="model-default-badge">DEFAULT</span>}
+                    </div>
+                  ))}
                 </div>
-              ))}
-            </div>
-          )}
+                {restModels.length > 0 && (
+                  <>
+                    <button className="solver-picker-toggle" onClick={() => setSolverModelsOpen(!solverModelsOpen)}>
+                      <span>{solverModelsOpen ? "▴ Fewer models" : "▾ More models (" + restModels.length + ")"}</span>
+                    </button>
+                    {solverModelsOpen && (
+                      <div className="solver-picker-list">
+                        {restModels.map((m) => (
+                          <div
+                            key={m.id}
+                            className={`model-item ${selectedSolver === m.id ? "selected" : ""}`}
+                            onClick={() => { setSelectedSolver(m.id); setSolverModelsOpen(false); }}
+                          >
+                            <div className="radio" />
+                            <div className="model-info">
+                              <div className="model-name">{m.display_name}</div>
+                              {m.notes && <div className="model-notes">{m.notes}</div>}
+                            </div>
+                          </div>
+                        ))}
+                      </div>
+                    )}
+                  </>
+                )}
+              </>
+            );
+          })()}
         </div>
 
         <div className="solver-body" ref={solverBodyRef}>
@@ -691,11 +708,10 @@ function Studio({ user, logout }) {
           >
             {workspace.length === 0 && messages.length === 0 ? (
               <div className="workspace-empty-hint">
-                <div className="icon">🎯</div>
-                <div className="title">Drag extractions here</div>
+                <div className="icon">📷</div>
+                <div className="title">No question loaded</div>
                 <div className="desc">
-                  Drop one or more extraction cards from the left panel.<br />
-                  Label them as <strong>Question</strong> or <strong>Attempt</strong>, then choose an action below.
+                  Upload and extract a question image from the left panel to get started.
                 </div>
               </div>
             ) : workspace.length > 0 ? (

@@ -809,24 +809,40 @@ body,
 /* ── Solver picker (collapsible in workspace panel) ───────── */
 .solver-picker-section {
   border-bottom: 1px solid var(--border);
+  padding: 8px 12px;
+}
+
+.solver-picker-top {
+  display: flex;
+  flex-direction: column;
+}
+
+.solver-picker-top .model-item,
+.solver-picker-list .model-item {
+  padding: 8px 10px;
+  font-size: 12px;
+  border-radius: 6px;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  gap: 8px;
 }
 
 .solver-picker-toggle {
   width: 100%;
   display: flex;
-  justify-content: space-between;
+  justify-content: center;
   align-items: center;
-  padding: 10px 20px;
+  padding: 6px 10px;
   background: none;
   border: none;
   cursor: pointer;
-  color: var(--text-primary);
-  font-size: 13px;
-  font-weight: 500;
-  transition: background 0.15s;
+  color: var(--text-muted);
+  font-size: 11px;
+  transition: color 0.15s;
 }
 .solver-picker-toggle:hover {
-  background: var(--surface-2);
+  color: var(--text-primary);
 }
 
 .solver-picker-current {
